@@ -14,7 +14,7 @@
 #
 #    2.  Generate table lists for all applications
 #          → Runs: 02_app_table_list.sh
-#          → Output: $ILM_METADATA_PATH/{APP}_table_list.csv (per app)
+#          → Output: $ILM_METADATA_PATH/{APP}/{APP}_table_list.csv (per app)
 #
 #    ── Per-Application Loop (steps 3–7) ──────────────────────────────────
 #
@@ -229,7 +229,7 @@ step_complete 1 $STEP1_START
 
 # =============================================================================
 # STEP 2 — Generate Table Lists for All Applications
-#           Output: $ILM_METADATA_PATH/{APP}_table_list.csv
+#           Output: $ILM_METADATA_PATH/{APP}/{APP}_table_list.csv
 # =============================================================================
 STEP2_START=$(date +%s)
 step_banner 2 "Generate Table Lists (all applications)"
@@ -288,10 +288,11 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     fi
 
     # --- Paths ---
-    TABLE_LIST_CSV="$ILM_METADATA_PATH/${APP_NAME}_table_list.csv"
     APP_META_DIR="$ILM_METADATA_PATH/$APP_NAME"
+    # Table list and attachment list both live under $ILM_METADATA_PATH/{APP}/
     # NOTE: 03_app_attachement_extraction.sh derives APP_NAME from dirname of the
     # attachment list, so the CSV MUST be placed inside a directory named $APP_NAME
+    TABLE_LIST_CSV="$APP_META_DIR/${APP_NAME}_table_list.csv"
     APP_ATT_LIST="$APP_META_DIR/${APP_NAME}_attachment_list.csv"
     APP_EXPORT_DIR="$EXPORT_PATH/$APP_NAME"
 

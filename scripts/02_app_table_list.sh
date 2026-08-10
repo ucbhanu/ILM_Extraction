@@ -18,13 +18,24 @@ log_init "$LOG_PATH/app_table_list_$(date '+%Y%m%d_%H%M%S').log"
 
 log INFO "Reading Application list..."
 
-APP_LIST=$(cat "$OUTPUT_DIR/application_list.txt")
+# application_list.txt is produced sorted by 01_applications_list.sh; sort again
+# defensively so this script is order-stable even when run standalone.
+APP_LIST=$(sort "$OUTPUT_DIR/application_list.txt")
 
-# 2. Loop through each App and save tables to $APP_table_list.txt
+# 2. Loop through each App and save tables to {APP}/{APP}_table_list.csv
 for APP in $APP_LIST; do
     log INFO "Processing Application: \t$APP"
-    RAW_FILE="${OUTPUT_DIR}/${APP}_table_list.raw"
-	FINAL_FILE="${OUTPUT_DIR}/${APP}_table_list.csv"
+
+    # Per-application metadata directory: $ILM_METADATA_PATH/{APP}/
+    APP_DIR="${OUTPUT_DIR}/${APP}"
+    if ! mkdir -p "$APP_DIR"; then
+        log ERROR "Failed to create metadata directory $APP_DIR - skipping $APP"
+        continue
+    fi
+    chmod 766 "$APP_DIR"
+
+    RAW_FILE="${APP_DIR}/${APP}_table_list.raw"
+    FINAL_FILE="${APP_DIR}/${APP}_table_list.csv"
     # Run ssaadmin, filter for table names, and redirect to file
 ssaadmin "$ADMIN_USER/$ADMIN_PASS" <<EOF > $RAW_FILE
 set db $APP

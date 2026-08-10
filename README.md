@@ -188,8 +188,8 @@ tooling, paths, permissions and AWS access before any data is touched.
 | Script | Purpose | Arguments |
 |---|---|---|
 | `00_aws_configure.sh` | Configure and verify AWS CLI, S3 and Lambda access | none |
-| `01_applications_list.sh` | Write `application_list.txt` | none |
-| `02_app_table_list.sh` | Write `{APP}_table_list.csv` for every application | none |
+| `01_applications_list.sh` | Write `application_list.txt`, sorted alphabetically | none |
+| `02_app_table_list.sh` | Write `{APP}/{APP}_table_list.csv` for every application | none |
 | `03_app_attachement_extraction.sh` | Invoke Lambda per attachment | `<attachment_list.csv>` |
 | `04_app_table_extraction.sh` | Export tables to CSV with headers | `<table_list.csv>` |
 | `05_app_copy_to_s3.sh` | Copy one application's data, evidence and logs to S3 | `<APP_NAME>` |
@@ -207,8 +207,8 @@ tooling, paths, permissions and AWS access before any data is touched.
 
 | Step | Action | Output |
 |---|---|---|
-| 1 | List ILM applications | `application_list.txt` |
-| 2 | Generate table lists | `{APP}_table_list.csv` |
+| 1 | List ILM applications (sorted alphabetically) | `application_list.txt` |
+| 2 | Generate table lists | `{APP}/{APP}_table_list.csv` |
 | 3 | Query `AM_ATTACHMENTS` | `{APP}_attachment_list.csv` |
 | 4 | Extract attachments via Lambda | `s3://{ATT_S3_BUCKET}/{APP}/` |
 | 5 | Extract tables to CSV | `$EXPORT_PATH/{APP}/{TABLE}.csv` |
@@ -409,9 +409,9 @@ error_exit "unrecoverable"     # logs FATAL and exits 1
 ├── logs/                                   # per-script logs
 │   └── pipeline/ilm_pipeline_{ts}.log
 └── ilm_metadata/
-    ├── application_list.txt
-    ├── {APP}_table_list.csv
+    ├── application_list.txt                 # root level, sorted alphabetically
     ├── {APP}/
+    │   ├── {APP}_table_list.csv
     │   ├── {APP}_attachment_list.csv
     │   └── {APP}_metadata_{ts}.csv
     ├── audit/audit_trail_{RUN_ID}.csv
@@ -467,6 +467,7 @@ s3://{TARGET_S3_BUCKET}/stage/
 | `Failed to source .conf.ini` | Missing config | `cp .conf.ini.example .conf.ini` |
 | `ssaadmin: command not found` | IDV environment not loaded | Check `IDV_HOME` and `ssaenv.sh` |
 | Placeholder values reported | `<CHANGE_ME>` left in config | Complete `.conf.ini` |
+| `No CSV produced for <TABLE>` | `ssasql .export bulk` wrote nothing | Check the logged ssasql output; an empty table or rejected export statement are the usual causes |
 | Lambda `AccessDeniedException` on `GetFunction` | Only a warning | Ignore - `InvokeFunction` is what matters |
 | Empty path segments in S3 keys | `$APP_NAME` appended in config | Remove it from `EXPORT_LOC` / `SOURCE_PATH` |
 | `07_s3_to_azure.sh is FUTURE SCOPE` | Azure transfer disabled by design | Uncomment the `AZURE_*` block and set `AZURE_TRANSFER_ENABLED=true` |

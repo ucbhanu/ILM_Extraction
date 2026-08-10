@@ -128,7 +128,8 @@ EOF
 	
 	# 8. Run ssasql with explicit schema setting
 	log "INFO" "Table Data extraction started..."
-    if ! ssasql fas "$DB_NAME" "$DB_USER/$DB_PASS" <<EOF 
+	EXPORT_RAW="$TARGET_DIR/${TABLE_NAME}_export.raw"
+    if ! ssasql fas "$DB_NAME" "$DB_USER/$DB_PASS" <<EOF >"$EXPORT_RAW" 2>&1
 alter session set systemcatalog=0;
 .set width 1048576;
 .set long 1048576;
@@ -137,9 +138,24 @@ alter session set systemcatalog=0;
 .exit;
 EOF
     then
-        log "ERROR" "Failed to export data for $TABLE_NAME"
+        log "ERROR" "Failed to export data for $TABLE_NAME (ssasql returned non-zero)"
+        log "ERROR" "ssasql output: $(tail -n 10 "$EXPORT_RAW" 2>/dev/null | tr '\n' ' ')"
+        rm -f "$EXPORT_RAW"
         continue
     fi
+
+	# 8b. Verify the export actually produced the CSV.
+	#     ssasql can exit 0 while writing nothing (for example when the export
+	#     statement is rejected). Without this guard step 9 fails with
+	#     "sed: can't read ...: No such file or directory".
+    if [[ ! -f "$TARGET_DIR/${TABLE_NAME}.csv" ]]; then
+        log "ERROR" "No CSV produced for $TABLE_NAME at $TARGET_DIR/${TABLE_NAME}.csv"
+        log "ERROR" "ssasql said: $(tail -n 10 "$EXPORT_RAW" 2>/dev/null | tr '\n' ' ')"
+        log "ERROR" "Table skipped - reconciliation will report it as missing."
+        rm -f "$EXPORT_RAW"
+        continue
+    fi
+    rm -f "$EXPORT_RAW"
 
 	# 9. merge column with data
 	log "INFO" "Merging Header with Table Data..."

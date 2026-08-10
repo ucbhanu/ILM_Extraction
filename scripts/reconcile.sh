@@ -101,7 +101,7 @@ log_line
 log INFO "1. Table reconciliation"
 log_line
 
-TABLE_LIST_CSV="$ILM_METADATA_PATH/${APP_NAME}_table_list.csv"
+TABLE_LIST_CSV="$ILM_METADATA_PATH/$APP_NAME/${APP_NAME}_table_list.csv"
 TABLES_EXPECTED=0
 TABLES_FOUND=0
 
