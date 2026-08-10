@@ -1,0 +1,59 @@
+#!/bin/bash
+# --- CONFIGURATION ---
+. ./conf.ini
+
+source "$IDV_HOME/ssaenv.sh"
+mkdir -p "$EXPORT_DIR"
+
+# 1. Get Table List
+ssasql fas "$DB_NAME" "$DB_USER/$DB_PASS" <<EOF > table_list_raw.txt
+    alter session set systemcatalog=on;
+    SELECT s.name || '.' || t.name FROM cat_schemas s, cat_tables t WHERE s.schid = t.schid;
+    .exit;
+EOF
+grep -E '^[A-Z0-9_]+\.[A-Z0-9_]+' table_list_raw.txt > table_list.txt
+
+echo "----------------------------------------------------"
+echo "Starting Export Process: $(date)"
+echo "----------------------------------------------------"
+# Start timer
+START_TIME=$SECONDS
+
+# 2. Export Loop with Timing
+while read -r TABLE_NAME; do
+    SCHEMA_PART=$(echo $TABLE_NAME | cut -d. -f1)
+    TABLE_PART=$(echo $TABLE_NAME | cut -d. -f2)
+    FILE_NAME="${SCHEMA_PART}_${TABLE_PART}.csv"
+    
+    echo -n "Exporting $TABLE_NAME... "
+
+    # Get Column Headers
+	ssasql fas "$DB_NAME" "$DB_USER/$DB_PASS" <<EOF > column_list_raw.txt
+        alter session set systemcatalog=on;
+		SELECT c.NAME FROM cat_tables t, cat_schemas s, cat_columns c
+        WHERE t.name='$TABLE_PART' AND s.name='$SCHEMA_PART'
+        AND t.schid=s.schid AND c.tid=t.tid ORDER BY c.colno;
+        .exit;
+	EOF
+	grep -E '^[A-Z0-9_]+\.[A-Z0-9_]+' column_list_raw.txt > column_list.txt
+	HEADERS=$(cat column_list.txt)
+    echo "$HEADERS" > "$EXPORT_DIR/$FILE_NAME"
+
+EOF
+    
+    # Merge and Cleanup
+    #cat "$EXPORT_DIR/temp_data.csv" >> "$EXPORT_DIR/$FILE_NAME"
+    #rm "$EXPORT_DIR/temp_data.csv"
+
+    # Calculate Duration
+    #DURATION=$(( SECONDS - START_TIME ))
+    #echo "Done! [Time Taken: ${DURATION}s]"
+
+done < table_list.txt
+
+echo "----------------------------------------------------"
+DURATION=$(( SECONDS - START_TIME ))
+echo "Done! [Total Time Taken: ${DURATION}s]"
+echo "----------------------------------------------------"
+echo "All exports finished at $(date)"
+
