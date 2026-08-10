@@ -1,21 +1,47 @@
 #!/bin/bash
+# =============================================================================
+#  06_aws_invoke.sh  —  Lambda Smoke Test
+#
+#  Invokes the attachment-download Lambda once, using values from .conf.ini
+#  (TEST_APP_NAME / TEST_ATT_DIR / TEST_ATT_NAME).
+#
+#  Usage:
+#    bash 06_aws_invoke.sh                                  # values from .conf.ini
+#    bash 06_aws_invoke.sh <APP_NAME> <ATT_DIR> <ATT_NAME>   # override at runtime
+# =============================================================================
 
 # --- Configuration ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ! . "$SCRIPT_DIR/conf.ini"; then
-    echo "ERROR: Failed to source conf.ini" >&2; exit 1
-fi
-if ! . "$SCRIPT_DIR/aws_conf.ini"; then
-    echo "ERROR: Failed to source aws_conf.ini" >&2; exit 1
+if ! . "$SCRIPT_DIR/.conf.ini"; then
+    echo "ERROR: Failed to source .conf.ini" >&2; exit 1
 fi
 
 # =============================================================================
-# TEST VARIABLES — fill in values before running
+# VALUES — from .conf.ini, optionally overridden by CLI arguments
 # =============================================================================
-APP_NAME="<CHANGE_ME>"    # e.g. LIFEDOC_QA
-DIR="<CHANGE_ME>"         # e.g. /ilmstage/LifeDoc/QA/Native/Batch1
-NAME="<CHANGE_ME>"        # e.g. 0902bc3b8080585e.doc
-# =============================================================================
+APP_NAME="${1:-$TEST_APP_NAME}"
+DIR="${2:-$TEST_ATT_DIR}"
+NAME="${3:-$TEST_ATT_NAME}"
+
+# --- Validate ---
+MISSING=()
+[[ -z "$APP_NAME"    || "$APP_NAME"    == "<CHANGE_ME>" ]] && MISSING+=("TEST_APP_NAME")
+[[ -z "$DIR"         || "$DIR"         == "<CHANGE_ME>" ]] && MISSING+=("TEST_ATT_DIR")
+[[ -z "$NAME"        || "$NAME"        == "<CHANGE_ME>" ]] && MISSING+=("TEST_ATT_NAME")
+[[ -z "$LAMBDA_FUNC" || "$LAMBDA_FUNC" == "<CHANGE_ME>" ]] && MISSING+=("LAMBDA_FUNC")
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+    echo "ERROR: The following values are not set in .conf.ini:" >&2
+    for v in "${MISSING[@]}"; do echo "  - $v" >&2; done
+    echo "Or pass them as arguments: $0 <APP_NAME> <ATT_DIR> <ATT_NAME>" >&2
+    exit 1
+fi
+
+echo "Lambda      : $LAMBDA_FUNC"
+echo "Region      : $AWS_REGION"
+echo "Application : $APP_NAME"
+echo "Directory   : $DIR"
+echo "Filename    : $NAME"
+echo "------------------------------------------------------------"
 
 # 1. Add automatic startdate
 STARTDATE=$(date '+%Y-%m-%dT%H:%M:%S')
@@ -23,10 +49,13 @@ STARTDATE=$(date '+%Y-%m-%dT%H:%M:%S')
 # 2. Ensure AWS credentials are set and valid
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   echo "ERROR: AWS credentials are not set or are invalid. Please configure your AWS CLI with valid credentials."
-  echo "To configure, run: aws configure"
+  echo "To configure, run: bash 00_aws_configure.sh"
   exit 1
 fi
 
+# --- Response file (cleaned up on exit) ---
+RESPONSE_FILE="$(mktemp "${TMPDIR:-/tmp}/lambda_response_XXXXXX.json")"
+trap 'rm -f "$RESPONSE_FILE"' EXIT
 
 # 3. PayLoad
 PAYLOAD=$(printf '{
@@ -41,18 +70,20 @@ PAYLOAD=$(printf '{
 echo "PAYLOAD: $PAYLOAD"
 
 # 4. Invoke Lambda
-aws lambda invoke \
+if ! aws lambda invoke \
 --function-name "$LAMBDA_FUNC" \
 --payload "$PAYLOAD" \
 --cli-binary-format raw-in-base64-out \
-response.json
+--region "$AWS_REGION" \
+"$RESPONSE_FILE"; then
+    echo "ERROR: Lambda invocation failed for $LAMBDA_FUNC" >&2
+    exit 1
+fi
 
-#sleep 1
-
-cat response.json
+cat "$RESPONSE_FILE"
 
 # 1. Clean the string: remove outer quotes and convert \" to "
-clean_data=$(sed 's/^"//; s/"$//; s/\\"/"/g' response.json)
+clean_data=$(sed 's/^"//; s/"$//; s/\\"/"/g' "$RESPONSE_FILE")
 
 # 2. Extract values using specific delimiters
 status=$(echo "$clean_data" | sed -n 's/.*"status" : "\([^"]*\)".*/\1/p')

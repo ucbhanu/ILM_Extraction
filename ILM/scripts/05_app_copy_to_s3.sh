@@ -21,11 +21,8 @@ trap 'log "ERROR" "Script interrupted by user (Ctrl+C). Exiting."; exit 130' INT
 
 # --- Configuration ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ! . "$SCRIPT_DIR/conf.ini"; then
-    error_exit "Failed to source conf.ini"
-fi
-if ! . "$SCRIPT_DIR/aws_conf.ini"; then
-    error_exit "Failed to source aws_conf.ini"
+if ! . "$SCRIPT_DIR/.conf.ini"; then
+    error_exit "Failed to source .conf.ini"
 fi
 
 # logging path
@@ -44,7 +41,7 @@ APP_NAME=$1
 if [[ -z "$APP_NAME" ]]; then
     error_exit "Usage: $0 <APP_NAME>"
 fi
-# Paths resolved from conf.ini (EXPORT_PATH) and aws_conf.ini (ATT_S3_BUCKET, TARGET_S3_STAGE)
+# Paths resolved from .conf.ini (EXPORT_PATH, ATT_S3_BUCKET, TARGET_S3_STAGE)
 ATT_SOURCE_PATH="$ATT_S3_BUCKET"
 TARGET_PATH="$TARGET_S3_STAGE/$APP_NAME"
 

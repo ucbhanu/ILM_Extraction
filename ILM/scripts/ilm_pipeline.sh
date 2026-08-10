@@ -63,11 +63,8 @@ CREATED_BY="$(whoami)@$(hostname)"
 # =============================================================================
 # 0. SOURCE CONFIGURATION
 # =============================================================================
-if ! . "$SCRIPT_DIR/conf.ini"; then
-    echo "[FATAL] Failed to source conf.ini" >&2; exit 1
-fi
-if ! . "$SCRIPT_DIR/aws_conf.ini"; then
-    echo "[FATAL] Failed to source aws_conf.ini" >&2; exit 1
+if ! . "$SCRIPT_DIR/.conf.ini"; then
+    echo "[FATAL] Failed to source .conf.ini" >&2; exit 1
 fi
 if ! source "$IDV_HOME/ssaenv.sh"; then
     echo "[FATAL] Failed to source $IDV_HOME/ssaenv.sh" >&2; exit 1

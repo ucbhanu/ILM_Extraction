@@ -14,7 +14,7 @@
 #
 #  Prerequisites:
 #    - AWS CLI v2 installed
-#    - aws_conf.ini filled in (AWS_REGION, AWS_PROFILE if applicable)
+#    - .conf.ini filled in (AWS_REGION, AWS_PROFILE if applicable)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,20 +30,20 @@ error_exit() { log "ERROR" "$1"; exit 1; }
 trap 'log "ERROR" "Script interrupted (Ctrl+C). Exiting."; exit 130' INT
 
 # =============================================================================
-# 1. SOURCE aws_conf.ini
+# 1. SOURCE .conf.ini
 # =============================================================================
 log "INFO" "============================================================"
 log "INFO" "  AWS CLI Configuration & Verification"
 log "INFO" "============================================================"
 
-if ! . "$SCRIPT_DIR/aws_conf.ini"; then
-    error_exit "Failed to source aws_conf.ini"
+if ! . "$SCRIPT_DIR/.conf.ini"; then
+    error_exit "Failed to source .conf.ini"
 fi
 
 # =============================================================================
-# 2. VALIDATE aws_conf.ini IS FILLED IN
+# 2. VALIDATE .conf.ini IS FILLED IN
 # =============================================================================
-log "INFO" "Validating aws_conf.ini..."
+log "INFO" "Validating .conf.ini..."
 
 MISSING=()
 [[ "$AWS_REGION"      == "<CHANGE_ME>" || -z "$AWS_REGION"      ]] && MISSING+=("AWS_REGION")
@@ -55,13 +55,13 @@ MISSING=()
 [[ "$TARGET_S3_BUCKET" == "<CHANGE_ME>" || -z "$TARGET_S3_BUCKET" ]] && MISSING+=("TARGET_S3_BUCKET")
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
-    log "ERROR" "The following variables in aws_conf.ini still have placeholder values:"
+    log "ERROR" "The following variables in .conf.ini still have placeholder values:"
     for v in "${MISSING[@]}"; do
         log "ERROR" "  - $v"
     done
-    error_exit "Please fill in aws_conf.ini before running this script."
+    error_exit "Please fill in .conf.ini before running this script."
 fi
-log "INFO" "aws_conf.ini values OK"
+log "INFO" ".conf.ini values OK"
 log "INFO" "------------------------------------------------------------"
 
 # =============================================================================

@@ -21,11 +21,8 @@ trap 'log "ERROR" "Script interrupted by user (Ctrl+C). Exiting."; exit 130' INT
 
 # --- Configuration ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ! . "$SCRIPT_DIR/conf.ini"; then
-    error_exit "Failed to source conf.ini"
-fi
-if ! . "$SCRIPT_DIR/aws_conf.ini"; then
-    error_exit "Failed to source aws_conf.ini"
+if ! . "$SCRIPT_DIR/.conf.ini"; then
+    error_exit "Failed to source .conf.ini"
 fi
 if ! source "$IDV_HOME/ssaenv.sh"; then
     error_exit "Failed to source $IDV_HOME/ssaenv.sh"
@@ -45,7 +42,7 @@ STARTDATE=$(date '+%Y-%m-%dT%H:%M:%S')
 # COUNTER
 COUNTER=0
 
-# AWS Lambda Function and export location are loaded from aws_conf.ini
+# AWS Lambda Function and export location are loaded from .conf.ini
 # (LAMBDA_FUNC and EXPORT_LOC)
 
 # Extract APP_NAME from the directory (eg returns: LIFEDOC_QA)

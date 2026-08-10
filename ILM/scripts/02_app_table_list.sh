@@ -2,7 +2,7 @@
 
 # --- Configuration ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SCRIPT_DIR/conf.ini"
+. "$SCRIPT_DIR/.conf.ini"
 OUTPUT_DIR=$ILM_METADATA_PATH
 #APP_NAME=$1
 SLEEP_TIME=1

@@ -1,0 +1,83 @@
+# =============================================================================
+#  .conf.ini.example  —  Template for the ILM export pipeline configuration
+#
+#  Setup:
+#      cp .conf.ini.example .conf.ini
+#      chmod 600 .conf.ini
+#      # then fill in every <CHANGE_ME> value
+#
+#  .conf.ini is git-ignored because it holds credentials. This template is
+#  committed so the required variables stay documented.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# IDV / DATABASE
+# -----------------------------------------------------------------------------
+export IDV_HOME="/opt/app/01/idv"
+
+# ssaadmin credentials.
+# NOTE: do not call these USER/PASS - USER is a standard shell variable and
+# exporting it breaks whoami-based logging and other child processes.
+export ADMIN_USER="<CHANGE_ME>"
+export ADMIN_PASS="<CHANGE_ME>"
+
+# ssasql (database) credentials
+export DB_USER="<CHANGE_ME>"
+export DB_PASS="<CHANGE_ME>"
+
+# -----------------------------------------------------------------------------
+# LOCAL / EFS PATHS
+# -----------------------------------------------------------------------------
+export EXPORT_PATH="/efs/ILM_EXPORT"
+export ILM_METADATA_PATH="/efs/ILM_EXPORT/ilm_metadata"
+export TMP_LOG="/efs/ILM_EXPORT/temp"
+export LOG_PATH="/efs/ILM_EXPORT/logs"
+
+# -----------------------------------------------------------------------------
+# AWS
+# -----------------------------------------------------------------------------
+# AWS Region (e.g. eu-central-1)
+export AWS_REGION="<CHANGE_ME>"
+
+# AWS CLI Profile -- uncomment and set if not using instance role
+#export AWS_PROFILE="<CHANGE_ME>"
+
+# ENVIRONMENT: set to qa or prod
+export ENV="<CHANGE_ME>"
+
+# -----------------------------------------------------------------------------
+# LAMBDA FUNCTION
+# -----------------------------------------------------------------------------
+# QA
+export LAMBDA_FUNC="<CHANGE_ME>"     # e.g. qa-informatica-bulk-app-file-download
+# PROD - uncomment and comment QA line above
+#export LAMBDA_FUNC="<CHANGE_ME>"    # e.g. prod-informatica-bulk-app-file-download
+
+# -----------------------------------------------------------------------------
+# ATTACHMENT DOWNLOAD - source S3 bucket exposed by Lambda
+# -----------------------------------------------------------------------------
+# QA
+export ATT_S3_BUCKET="<CHANGE_ME>"   # e.g. s3://bulk-download.qa.int.bayer.com
+# PROD - uncomment and comment QA line above
+#export ATT_S3_BUCKET="<CHANGE_ME>"  # e.g. s3://bulk-download.prod.int.bayer.com
+
+# Same bucket as ATT_S3_BUCKET but without the s3:// prefix.
+# Do NOT append $APP_NAME here - the scripts add it themselves.
+export EXPORT_LOC="${ATT_S3_BUCKET#s3://}"
+
+# -----------------------------------------------------------------------------
+# ILM EXPORT - source (EFS) and target (S3) paths
+# -----------------------------------------------------------------------------
+# Do NOT append $APP_NAME here - the scripts add it themselves.
+export SOURCE_PATH="/efs/ILM_EXPORT"
+export TARGET_S3_BUCKET="<CHANGE_ME>"   # e.g. s3://ilm-export
+export TARGET_S3_STAGE="$TARGET_S3_BUCKET/stage"
+
+# =============================================================================
+# LAMBDA SMOKE TEST - used only by 06_aws_invoke.sh
+# Values can be overridden at runtime:
+#   bash 06_aws_invoke.sh <APP_NAME> <ATTACHMENT_DIRECTORY> <ATTACHMENT_NAME>
+# =============================================================================
+export TEST_APP_NAME="<CHANGE_ME>"   # e.g. LIFEDOC_QA
+export TEST_ATT_DIR="<CHANGE_ME>"    # e.g. /ilmstage/LifeDoc/QA/Native/Batch1
+export TEST_ATT_NAME="<CHANGE_ME>"   # e.g. 0902bc3b8080585e.doc

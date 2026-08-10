@@ -18,8 +18,8 @@ error_exit() {
 
 # --- Configuration ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ! . "$SCRIPT_DIR/conf.ini"; then
-    error_exit "Failed to source conf.ini"
+if ! . "$SCRIPT_DIR/.conf.ini"; then
+    error_exit "Failed to source .conf.ini"
 fi
 if ! source "$IDV_HOME/ssaenv.sh"; then
     error_exit "Failed to source $IDV_HOME/ssaenv.sh"
