@@ -77,6 +77,13 @@ while IFS=',' read -r DIR NAME REST || [[ -n "$DIR" ]]; do
     log "INFO" "[$COUNTER] Processing Directory: $DIR, Filename: $NAME"
 	log "INFO" "-----------------------------------------------------------------------------"
 	# 3. Create JSON Payload
+	# Build the destination sub-path for the Lambda.
+	#   - strip the /ilmstage/ prefix when present
+	#   - strip any remaining leading slash, otherwise the key becomes
+	#     "APP//opt/..." (a double slash, which S3 shows as a folder named "/")
+	SUBPATH="${DIR#/ilmstage/}"
+	SUBPATH="${SUBPATH#/}"
+
 	# Use printf to safely inject variables into the JSON template
     PAYLOAD=$(printf '{
       "subpath": "",
@@ -85,7 +92,7 @@ while IFS=',' read -r DIR NAME REST || [[ -n "$DIR" ]]; do
       "ATTACHMENT_DIRECTORY": "%s",
       "ATTACHMENT_NAME": "%s",
       "status": "QUEUED"
-    }' "$APP_NAME" "$APP_NAME/${DIR#/ilmstage/}" "$DIR" "$NAME")
+    }' "$APP_NAME" "$APP_NAME/$SUBPATH" "$DIR" "$NAME")
 	
 	# 4. Invoke Lambda
     if ! aws lambda invoke \

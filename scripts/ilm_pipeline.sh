@@ -586,9 +586,12 @@ SSASQL
     SRC_ATT_S3=$(s3_count "$ATT_S3_BUCKET/$APP_NAME/")
     log "INFO" "[$APP_NAME] Source attachment files in S3: $SRC_ATT_S3"
     if [[ "$SRC_ATT_S3" -gt 0 ]]; then
-        if ! s3_mirror "$ATT_S3_BUCKET/$APP_NAME" "$APP_S3_TARGET/attachements" \
+        # Additive, NOT a mirror. The bulk-download bucket is transient and may
+        # expire objects; mirroring with --delete would erase attachments that
+        # were already archived here by an earlier run.
+        if ! s3_sync_additive "$ATT_S3_BUCKET/$APP_NAME" "$APP_S3_TARGET/attachements" \
                 "$APP_NAME attachments" "$APP_NAME" "step7b"; then
-            warn "[$APP_NAME] Failed to mirror attachments to S3"
+            warn "[$APP_NAME] Failed to copy attachments to S3"
             ((COPY_ERRORS++))
         fi
     else
