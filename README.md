@@ -1,8 +1,12 @@
 # ILM Extraction Pipeline
 
-Automated extraction, transfer and GxP-compliant validation of archived application data from **Informatica Data Vault (IDV / ILM)** to **AWS S3** and onward to **Azure Blob Storage**.
+Automated extraction, transfer and GxP-compliant validation of archived application data from **Informatica Data Vault (IDV / ILM)** to **AWS S3**.
 
 The pipeline extracts database tables and document attachments for every archived application, reconciles what was extracted against source and target, and produces a sealed evidence package suitable for regulated (GxP / 21 CFR Part 11) review.
+
+> **Scope note:** onward movement from S3 to **Azure Blob Storage** is *future scope*. The
+> implementation is included in the repository but is disabled and is **not** invoked by the
+> pipeline. See [Future scope](#future-scope-s3-to-azure).
 
 ---
 
@@ -19,7 +23,7 @@ The pipeline extracts database tables and document attachments for every archive
 - [Restartability](#restartability)
 - [Progress reporting](#progress-reporting)
 - [Evidence and reconciliation](#evidence-and-reconciliation)
-- [S3 to Azure transfer](#s3-to-azure-transfer)
+- [Future scope: S3 to Azure](#future-scope-s3-to-azure)
 - [Logging framework](#logging-framework)
 - [Output layout](#output-layout)
 - [Security](#security)
@@ -48,8 +52,8 @@ flowchart TD
     J --> K[reconcile.sh - three-way reconciliation]
     K --> L[Evidence pack + audit trail]
     L --> J
-    J --> M[07_s3_to_azure.sh]
-    M --> N[(Azure Blob Storage)]
+    J -.-> M[07_s3_to_azure.sh - FUTURE SCOPE, disabled]
+    M -.-> N[(Azure Blob Storage)]
 ```
 
 **Data flow summary**
@@ -60,7 +64,7 @@ flowchart TD
 | Attachment extraction | IDV filesystem via Lambda | `s3://{ATT_S3_BUCKET}/{APP}/` |
 | Consolidation | EFS + attachment bucket | `s3://{TARGET_S3_BUCKET}/stage/{APP}/` |
 | Evidence | Local metadata | `s3://{TARGET_S3_BUCKET}/stage/_evidence/{RUN_ID}/` |
-| Archive tier | S3 stage | Azure Blob container |
+| Archive tier *(future)* | S3 stage | Azure Blob container |
 
 ---
 
@@ -84,7 +88,7 @@ scripts/
 ├── 04_app_table_extraction.sh        # Export tables to CSV with headers
 ├── 05_app_copy_to_s3.sh      # Standalone per-application copy to S3
 ├── 06_aws_invoke.sh          # Single-attachment Lambda smoke test
-├── 07_s3_to_azure.sh         # Transfer S3 stage to Azure Blob Storage
+├── 07_s3_to_azure.sh         # FUTURE SCOPE - S3 to Azure, disabled
 │
 ├── ilm_pipeline.sh           # Full orchestrated pipeline (steps 1-9)
 ├── reconcile.sh              # Reconciliation + GxP validation report
@@ -102,8 +106,8 @@ scripts/
 | **AWS CLI v2** | Configured credentials or an instance role |
 | **sha256sum** or **shasum** | Required for GxP evidence checksums |
 | **EFS mount** | Writable `/efs/ILM_EXPORT` (or your `EXPORT_PATH`) |
-| **azcopy** | Only for `07_s3_to_azure.sh` |
-| **az CLI** | Optional - enables independent Azure blob count verification |
+| ~~azcopy~~ | *Future scope only - not required today* |
+| ~~az CLI~~ | *Future scope only - not required today* |
 
 ### Required AWS permissions
 
@@ -147,10 +151,9 @@ vi .conf.ini
 | `EXPORT_LOC` | Same bucket without `s3://` | derived automatically |
 | `TARGET_S3_BUCKET` | Destination bucket | `s3://ilm-export` |
 | `TARGET_S3_STAGE` | Stage prefix | `$TARGET_S3_BUCKET/stage` |
-| `AZURE_STORAGE_ACCOUNT` | Azure storage account | |
-| `AZURE_CONTAINER` | Azure blob container | |
-| `AZURE_TRANSFER_MODE` | `direct` or `staged` | `staged` |
-| `AZURE_AUTH_MODE` | `sas`, `spn` or `msi` | `sas` |
+
+The `AZURE_*` block in `.conf.ini` is commented out because the Azure transfer is
+future scope. See [Future scope](#future-scope-s3-to-azure).
 
 > **Never** append `$APP_NAME` to `EXPORT_LOC` or `SOURCE_PATH`. The scripts append the
 > application name themselves; doing it twice produces empty path segments.
@@ -173,10 +176,6 @@ bash ilm_pipeline.sh
 
 # 4. If it was interrupted, resume without repeating completed work
 bash ilm_pipeline.sh --resume
-
-# 5. Transfer the staged data to Azure
-bash 07_s3_to_azure.sh --dry-run
-bash 07_s3_to_azure.sh
 ```
 
 Always run `smoke_test.sh` first on a new host. It validates syntax, configuration,
@@ -195,7 +194,7 @@ tooling, paths, permissions and AWS access before any data is touched.
 | `04_app_table_extraction.sh` | Export tables to CSV with headers | `<table_list.csv>` |
 | `05_app_copy_to_s3.sh` | Copy one application's data, evidence and logs to S3 | `<APP_NAME>` |
 | `06_aws_invoke.sh` | Invoke the Lambda once as a smoke test | `[APP] [DIR] [NAME]` |
-| `07_s3_to_azure.sh` | Transfer the S3 stage to Azure | `[--prefix APP] [--dry-run]` |
+| `07_s3_to_azure.sh` | *Future scope - disabled* | `[--prefix APP] [--dry-run]` |
 | `ilm_pipeline.sh` | Full orchestration, steps 1-9 | `[--resume\|--fresh]` |
 | `reconcile.sh` | Reconciliation and GxP validation report | `<APP_NAME> [RUN_ID]` |
 | `smoke_test.sh` | Preflight validation | `[--no-aws]` |
@@ -321,7 +320,23 @@ altered, and the whole package is uploaded to
 
 ---
 
-## S3 to Azure transfer
+## Future scope: S3 to Azure
+
+> **Not active.** The S3 to Azure movement is planned for a later phase. The
+> implementation is committed so it is ready to enable, but it is **not** called by
+> `ilm_pipeline.sh`, its configuration block in `.conf.ini` is commented out, and the
+> script exits immediately unless `AZURE_TRANSFER_ENABLED="true"`.
+
+`07_s3_to_azure.sh` copies the staged export (data, metadata, evidence, audit trail
+and logs) from the S3 stage prefix into an Azure Blob container, then reconciles S3
+object count against Azure blob count and records the transfer in the audit trail.
+
+### Enabling it later
+
+1. Uncomment the `AZURE_*` block in `.conf.ini` and fill in the values
+2. Set `AZURE_TRANSFER_ENABLED="true"`
+3. Install `azcopy` (and optionally the `az` CLI for independent verification)
+4. Re-enable section 11 in `smoke_test.sh` (retained, commented out)
 
 ```bash
 bash 07_s3_to_azure.sh --dry-run              # plan only
@@ -346,9 +361,6 @@ bash 07_s3_to_azure.sh --prefix LIFEDOC_QA    # one application
 
 SAS tokens and client secrets are **never** written to logs. All azcopy output passes
 through a redaction filter that strips `sig=` and `sv=` query parameters.
-
-After transfer the script reconciles S3 object count against Azure blob count and
-writes `azure_transfer_*.csv` into the evidence package.
 
 ---
 
@@ -433,8 +445,8 @@ s3://{TARGET_S3_BUCKET}/stage/
 
 - **`.conf.ini` is git-ignored** and contains credentials. Keep it at `chmod 600`.
   Use `.conf.ini.example` as the committed template.
-- **SAS tokens and client secrets must never be stored in `.conf.ini`.** Export them
-  in the shell or use a `chmod 600` file referenced by `AZURE_SAS_FILE`.
+- **SAS tokens and client secrets must never be stored in `.conf.ini`** *(future scope)*.
+  Export them in the shell or use a `chmod 600` file referenced by `AZURE_SAS_FILE`.
   `.gitignore` blocks `.azure_sas`, `*.sas` and `*.sastoken`.
 - **AWS credentials are entered interactively** in `00_aws_configure.sh` and are
   never written to a log file.
@@ -457,8 +469,7 @@ s3://{TARGET_S3_BUCKET}/stage/
 | Placeholder values reported | `<CHANGE_ME>` left in config | Complete `.conf.ini` |
 | Lambda `AccessDeniedException` on `GetFunction` | Only a warning | Ignore - `InvokeFunction` is what matters |
 | Empty path segments in S3 keys | `$APP_NAME` appended in config | Remove it from `EXPORT_LOC` / `SOURCE_PATH` |
-| Reconciliation `UNVERIFIED` for Azure | `az` CLI not installed | Install the Azure CLI |
-| `direct mode needs AWS access keys` | azcopy cannot use IAM roles for S3 | Set `AZURE_TRANSFER_MODE=staged` |
+| `07_s3_to_azure.sh is FUTURE SCOPE` | Azure transfer disabled by design | Uncomment the `AZURE_*` block and set `AZURE_TRANSFER_ENABLED=true` |
 | Column headers wrong or empty | `ssasql` banner length changed | Review the offset in `04_app_table_extraction.sh` |
 
 Diagnostics:
@@ -491,3 +502,5 @@ LOG_LEVEL=DEBUG bash ilm_pipeline.sh
   destination key naming.
 - `03_app_attachement_extraction.sh` and `06_aws_invoke.sh` populate the Lambda
   `startdate` field differently. Confirm which form the function expects.
+- The S3 to Azure transfer is implemented but **unvalidated** - it is future scope
+  and has never been executed end to end.

@@ -84,7 +84,6 @@ REQUIRED_FILES=(
     "04_app_table_extraction.sh"
     "05_app_copy_to_s3.sh"
     "06_aws_invoke.sh"
-    "07_s3_to_azure.sh"
     "ilm_pipeline.sh"
     "reconcile.sh"
 )
@@ -367,58 +366,63 @@ else
 fi
 
 # =============================================================================
-# 11. AZURE TRANSFER READINESS (optional target)
+# 11. AZURE TRANSFER READINESS — FUTURE SCOPE, NOT CHECKED
+#
+#     The S3 -> Azure movement (07_s3_to_azure.sh) is planned for a later
+#     phase. The checks below are retained, commented out, so they can be
+#     re-enabled together with the AZURE_* block in .conf.ini.
 # =============================================================================
-section "11. Azure transfer readiness (07_s3_to_azure.sh)"
+section "11. Azure transfer readiness - SKIPPED (future scope)"
+log INFO "  S3 -> Azure movement is not part of the current pipeline."
 
-if [[ -z "${AZURE_STORAGE_ACCOUNT:-}" || "${AZURE_STORAGE_ACCOUNT}" == "<CHANGE_ME>" ]]; then
-    check_warn "Azure not configured - 07_s3_to_azure.sh will not run (fine if unused)"
-else
-    check_pass "Azure account configured: $AZURE_STORAGE_ACCOUNT/$AZURE_CONTAINER"
-
-    if command -v "${AZCOPY_BIN:-azcopy}" >/dev/null 2>&1; then
-        check_pass "azcopy available: $("${AZCOPY_BIN:-azcopy}" --version 2>&1 | head -n 1)"
-    else
-        check_fail "azcopy not found - required by 07_s3_to_azure.sh"
-    fi
-
-    if command -v az >/dev/null 2>&1; then
-        check_pass "az CLI available (enables Azure blob count verification)"
-    else
-        check_warn "az CLI not found - Azure transfers cannot be independently reconciled"
-    fi
-
-    case "${AZURE_AUTH_MODE:-}" in
-        sas)
-            if [[ -n "${AZURE_SAS_TOKEN:-}" ]]; then
-                check_pass "SAS token present in environment"
-            elif [[ -n "${AZURE_SAS_FILE:-}" && -f "${AZURE_SAS_FILE}" ]]; then
-                SASPERM="$(stat -c '%a' "$AZURE_SAS_FILE" 2>/dev/null || echo '')"
-                if [[ "$SASPERM" == "600" || "$SASPERM" == "400" ]]; then
-                    check_pass "SAS file present with safe permissions ($SASPERM)"
-                else
-                    check_warn "SAS file $AZURE_SAS_FILE has mode ${SASPERM:-unknown} - run: chmod 600"
-                fi
-            else
-                check_fail "AZURE_AUTH_MODE=sas but no SAS token or readable SAS file"
-            fi ;;
-        spn)
-            if [[ -n "${AZURE_TENANT_ID:-}" && -n "${AZURE_CLIENT_ID:-}" && -n "${AZURE_CLIENT_SECRET:-}" ]]; then
-                check_pass "service principal credentials present in environment"
-            else
-                check_fail "AZURE_AUTH_MODE=spn but tenant/client/secret not exported"
-            fi ;;
-        msi)
-            check_pass "managed identity mode selected" ;;
-        *)
-            check_fail "AZURE_AUTH_MODE invalid: '${AZURE_AUTH_MODE:-}' (use sas|spn|msi)" ;;
-    esac
-
-    case "${AZURE_TRANSFER_MODE:-}" in
-        direct|staged) check_pass "transfer mode: $AZURE_TRANSFER_MODE" ;;
-        *) check_fail "AZURE_TRANSFER_MODE invalid: '${AZURE_TRANSFER_MODE:-}' (use direct|staged)" ;;
-    esac
-fi
+# if [[ -z "${AZURE_STORAGE_ACCOUNT:-}" || "${AZURE_STORAGE_ACCOUNT}" == "<CHANGE_ME>" ]]; then
+#     check_warn "Azure not configured - 07_s3_to_azure.sh will not run (fine if unused)"
+# else
+#     check_pass "Azure account configured: $AZURE_STORAGE_ACCOUNT/$AZURE_CONTAINER"
+#
+#     if command -v "${AZCOPY_BIN:-azcopy}" >/dev/null 2>&1; then
+#         check_pass "azcopy available: $("${AZCOPY_BIN:-azcopy}" --version 2>&1 | head -n 1)"
+#     else
+#         check_fail "azcopy not found - required by 07_s3_to_azure.sh"
+#     fi
+#
+#     if command -v az >/dev/null 2>&1; then
+#         check_pass "az CLI available (enables Azure blob count verification)"
+#     else
+#         check_warn "az CLI not found - Azure transfers cannot be independently reconciled"
+#     fi
+#
+#     case "${AZURE_AUTH_MODE:-}" in
+#         sas)
+#             if [[ -n "${AZURE_SAS_TOKEN:-}" ]]; then
+#                 check_pass "SAS token present in environment"
+#             elif [[ -n "${AZURE_SAS_FILE:-}" && -f "${AZURE_SAS_FILE}" ]]; then
+#                 SASPERM="$(stat -c '%a' "$AZURE_SAS_FILE" 2>/dev/null || echo '')"
+#                 if [[ "$SASPERM" == "600" || "$SASPERM" == "400" ]]; then
+#                     check_pass "SAS file present with safe permissions ($SASPERM)"
+#                 else
+#                     check_warn "SAS file $AZURE_SAS_FILE has mode ${SASPERM:-unknown} - run: chmod 600"
+#                 fi
+#             else
+#                 check_fail "AZURE_AUTH_MODE=sas but no SAS token or readable SAS file"
+#             fi ;;
+#         spn)
+#             if [[ -n "${AZURE_TENANT_ID:-}" && -n "${AZURE_CLIENT_ID:-}" && -n "${AZURE_CLIENT_SECRET:-}" ]]; then
+#                 check_pass "service principal credentials present in environment"
+#             else
+#                 check_fail "AZURE_AUTH_MODE=spn but tenant/client/secret not exported"
+#             fi ;;
+#         msi)
+#             check_pass "managed identity mode selected" ;;
+#         *)
+#             check_fail "AZURE_AUTH_MODE invalid: '${AZURE_AUTH_MODE:-}' (use sas|spn|msi)" ;;
+#     esac
+#
+#     case "${AZURE_TRANSFER_MODE:-}" in
+#         direct|staged) check_pass "transfer mode: $AZURE_TRANSFER_MODE" ;;
+#         *) check_fail "AZURE_TRANSFER_MODE invalid: '${AZURE_TRANSFER_MODE:-}' (use direct|staged)" ;;
+#     esac
+# fi
 
 # =============================================================================
 # SUMMARY
