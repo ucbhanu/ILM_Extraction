@@ -100,7 +100,11 @@ ckpt_mark_done() {
 # =============================================================================
 ckpt_count() {
     [[ -n "$CKPT_FILE" && -f "$CKPT_FILE" ]] || { printf '0'; return 0; }
-    grep -c . "$CKPT_FILE" 2>/dev/null || printf '0'
+    # NOTE: `grep -c` prints 0 AND exits 1 on no match, so a `|| printf 0`
+    # fallback would fire as well and emit "00". Capture first, default after.
+    local n
+    n="$(grep -c . "$CKPT_FILE" 2>/dev/null)" || n=0
+    printf '%s' "${n:-0}"
 }
 
 # =============================================================================

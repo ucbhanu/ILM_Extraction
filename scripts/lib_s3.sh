@@ -41,8 +41,11 @@ __s3_audit() {
 s3_count() {
     local uri="$1"
     local flags; flags="$(s3_flags)"
+    # NOTE: use `grep -v ... | wc -l`, never `grep -vc`.
+    # `grep -vc` prints 0 AND exits 1 on empty input, so a `|| echo 0` fallback
+    # fires as well and the function returns "0\n0", which breaks arithmetic.
     # shellcheck disable=SC2086
-    aws s3 ls "$uri" --recursive $flags 2>/dev/null | grep -vc ' PRE ' || printf '0'
+    aws s3 ls "$uri" --recursive $flags 2>/dev/null | grep -v ' PRE ' | wc -l | tr -d '[:space:]'
 }
 
 # =============================================================================

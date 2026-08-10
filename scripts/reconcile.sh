@@ -126,10 +126,12 @@ if [[ -f "$TABLE_LIST_CSV" ]]; then
             FSHA="$(trace_sha256 "$CSV_PATH")"
             TABLES_FOUND=$((TABLES_FOUND+1))
 
-            if echo "$S3_TABLE_LISTING" | grep -q "/${TABLE_NAME}.csv$"; then
+            if printf '%s' "$S3_TABLE_LISTING" | grep -Fq "/${TABLE_NAME}.csv"; then
                 S3_CNT=1
-                S3_BYTES="$(echo "$S3_TABLE_LISTING" | awk -v f="/${TABLE_NAME}.csv" \
-                            '$4 ~ f {print $3; exit}')"
+                # Literal (index) match - table names contain dots, which would
+                # otherwise be treated as regex wildcards.
+                S3_BYTES="$(printf '%s' "$S3_TABLE_LISTING" \
+                            | awk -v f="/${TABLE_NAME}.csv" 'index($4, f) > 0 {print $3; exit}')"
                 if [[ -n "$S3_BYTES" && "$S3_BYTES" == "$FSIZE" ]]; then
                     record_result "table" "$TABLE_NAME" "$EXTRACTED" "$EXTRACTED" "$S3_CNT" \
                         "$FSIZE" "$FSHA" "PASS" ""
@@ -155,6 +157,12 @@ if [[ -f "$TABLE_LIST_CSV" ]]; then
 
     log INFO "  Tables expected : $TABLES_EXPECTED"
     log INFO "  Tables extracted: $TABLES_FOUND"
+
+    if (( TABLES_EXPECTED == 0 )); then
+        record_result "table" "ALL" "0" "0" "0" "0" "NA" "PASS" \
+            "application has no tables"
+        log INFO "  [PASS] application has no tables to extract"
+    fi
 else
     log WARN "  Table list not found: $TABLE_LIST_CSV"
     audit_event "reconcile" "$APP_NAME" "table_list" "$TABLE_LIST_CSV" "read" "MISSING" \
@@ -178,21 +186,33 @@ else
     log WARN "  Attachment list not found: $ATT_LIST"
 fi
 
+# NOTE: use `grep -v ... | wc -l`, never `grep -vc`.
+# `grep -vc` prints 0 AND exits 1 on empty input, so any `|| echo 0` fallback
+# fires too and the variable ends up as "0\n0", breaking (( )) comparisons.
 ATT_S3_COUNT="$(aws s3 ls "$APP_S3_TARGET/attachements/" --recursive \
-                --region "$AWS_REGION" 2>/dev/null | grep -vc ' PRE ' || echo 0)"
+                --region "$AWS_REGION" 2>/dev/null | grep -v ' PRE ' | wc -l | tr -d '[:space:]')"
 
 log INFO "  Attachments expected in list : $ATT_EXPECTED"
 log INFO "  Attachment objects in S3     : $ATT_S3_COUNT"
 
-if (( ATT_EXPECTED == 0 && ATT_S3_COUNT == 0 )); then
-    record_result "attachment" "ALL" "0" "0" "0" "0" "NA" "PASS" "no attachments expected"
-elif (( ATT_EXPECTED == ATT_S3_COUNT )); then
+# S3 accumulates objects across runs, so completeness means "every expected
+# attachment is present", not "the counts are identical".
+if (( ATT_EXPECTED == 0 )); then
+    record_result "attachment" "ALL" "0" "0" "$ATT_S3_COUNT" "0" "NA" "PASS" \
+        "no attachments expected"
+    log INFO "  [PASS] no attachments expected for this application"
+elif (( ATT_S3_COUNT >= ATT_EXPECTED )); then
+    EXTRA_NOTE=""
+    (( ATT_S3_COUNT > ATT_EXPECTED )) && \
+        EXTRA_NOTE="s3 holds $(( ATT_S3_COUNT - ATT_EXPECTED )) additional object(s) from previous runs"
     record_result "attachment" "ALL" "$ATT_EXPECTED" "$ATT_EXPECTED" "$ATT_S3_COUNT" \
-        "0" "NA" "PASS" ""
+        "0" "NA" "PASS" "$EXTRA_NOTE"
+    log INFO "  [PASS] all $ATT_EXPECTED expected attachment(s) present in S3"
+    [[ -n "$EXTRA_NOTE" ]] && log INFO "  Note: $EXTRA_NOTE"
 else
     record_result "attachment" "ALL" "$ATT_EXPECTED" "$ATT_EXPECTED" "$ATT_S3_COUNT" \
-        "0" "NA" "FAIL" "count mismatch expected=$ATT_EXPECTED s3=$ATT_S3_COUNT"
-    log WARN "  [FAIL] attachment count mismatch (expected=$ATT_EXPECTED s3=$ATT_S3_COUNT)"
+        "0" "NA" "FAIL" "missing $(( ATT_EXPECTED - ATT_S3_COUNT )) attachment(s) in S3"
+    log WARN "  [FAIL] $(( ATT_EXPECTED - ATT_S3_COUNT )) attachment(s) missing in S3 (expected=$ATT_EXPECTED s3=$ATT_S3_COUNT)"
 fi
 
 [[ -f "$ATT_LIST" ]] && evidence_add "$APP_NAME" "metadata" "$ATT_LIST" \
@@ -207,19 +227,47 @@ log_line
 
 APP_META_DIR="$ILM_METADATA_PATH/$APP_NAME"
 META_LOCAL=0
-[[ -d "$APP_META_DIR" ]] && META_LOCAL="$(find "$APP_META_DIR" -type f 2>/dev/null | wc -l)"
-META_S3="$(aws s3 ls "$APP_S3_TARGET/metadata/" --recursive --region "$AWS_REGION" 2>/dev/null \
-           | grep -vc ' PRE ' || echo 0)"
+META_MISSING=0
+MISSING_META_FILES=()
 
-log INFO "  Metadata files local : $META_LOCAL"
-log INFO "  Metadata files in S3 : $META_S3"
+# Fetch the S3 listing once, then verify that every local metadata file is
+# present. A plain count comparison is wrong here: S3 accumulates timestamped
+# artifacts across runs, so the target legitimately holds more objects than the
+# current run produced.
+META_S3_LISTING="$(aws s3 ls "$APP_S3_TARGET/metadata/" --recursive \
+                   --region "$AWS_REGION" 2>/dev/null)"
+META_S3="$(printf '%s' "$META_S3_LISTING" | grep -v ' PRE ' | grep -c . | tr -d '[:space:]')"
 
-if (( META_LOCAL == META_S3 )); then
-    record_result "metadata" "ALL" "$META_LOCAL" "$META_LOCAL" "$META_S3" "0" "NA" "PASS" ""
+if [[ -d "$APP_META_DIR" ]]; then
+    while IFS= read -r -d '' META_FILE; do
+        META_LOCAL=$((META_LOCAL+1))
+        META_BASE="$(basename "$META_FILE")"
+        if ! printf '%s' "$META_S3_LISTING" | grep -Fq "/$META_BASE"; then
+            META_MISSING=$((META_MISSING+1))
+            MISSING_META_FILES+=("$META_BASE")
+        fi
+    done < <(find "$APP_META_DIR" -type f -print0 2>/dev/null)
+fi
+
+log INFO "  Metadata files local    : $META_LOCAL"
+log INFO "  Metadata objects in S3  : $META_S3"
+log INFO "  Local files missing in S3: $META_MISSING"
+
+if (( META_MISSING == 0 )); then
+    EXTRA_NOTE=""
+    (( META_S3 > META_LOCAL )) && \
+        EXTRA_NOTE="s3 holds $(( META_S3 - META_LOCAL )) additional object(s) from previous runs"
+    record_result "metadata" "ALL" "$META_LOCAL" "$META_LOCAL" "$META_S3" "0" "NA" "PASS" \
+        "$EXTRA_NOTE"
+    log INFO "  [PASS] all $META_LOCAL local metadata file(s) present in S3"
+    [[ -n "$EXTRA_NOTE" ]] && log INFO "  Note: $EXTRA_NOTE"
 else
     record_result "metadata" "ALL" "$META_LOCAL" "$META_LOCAL" "$META_S3" "0" "NA" "FAIL" \
-        "count mismatch local=$META_LOCAL s3=$META_S3"
-    log WARN "  [FAIL] metadata count mismatch (local=$META_LOCAL s3=$META_S3)"
+        "$META_MISSING local file(s) not found in S3"
+    log WARN "  [FAIL] $META_MISSING local metadata file(s) not found in S3:"
+    for m in "${MISSING_META_FILES[@]}"; do
+        log WARN "      - $m"
+    done
 fi
 
 # =============================================================================
