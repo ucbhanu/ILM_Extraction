@@ -96,7 +96,7 @@ for f in "${REQUIRED_FILES[@]}"; do
 done
 
 # =============================================================================
-# 3. SYNTAX CHECK (bash -n) — parses without executing
+# 3. SCRIPT SYNTAX AND LINE ENDINGS
 # =============================================================================
 section "3. Script syntax"
 for f in "$SCRIPT_DIR"/*.sh; do
@@ -107,6 +107,47 @@ for f in "$SCRIPT_DIR"/*.sh; do
         check_fail "syntax ERROR: $(basename "$f") -> $(bash -n "$f" 2>&1 | head -n 2 | tr '\n' ' ')"
     fi
 done
+
+# --- Line endings -----------------------------------------------------------
+# A single CR before the newline makes Linux report
+#   /bin/bash^M: bad interpreter: No such file or directory
+# The repository stores LF (see .gitattributes), but a file copied through a
+# Windows tool can still arrive with CRLF. Detect it here rather than at
+# runtime, and give a fix that does NOT require dos2unix to be installed.
+section "3b. Line endings (must be LF)"
+CRLF_FILES=()
+for f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/.conf.ini; do
+    [[ -f "$f" ]] || continue
+    if awk 'index($0, "\r") { found = 1 } END { exit found ? 0 : 1 }' "$f" 2>/dev/null; then
+        CRLF_FILES+=("$(basename "$f")")
+    fi
+done
+
+if (( ${#CRLF_FILES[@]} == 0 )); then
+    check_pass "all scripts use Unix (LF) line endings"
+else
+    check_fail "${#CRLF_FILES[@]} file(s) contain Windows (CRLF) line endings: ${CRLF_FILES[*]}"
+    log ERROR "  Fix without dos2unix:"
+    log ERROR "      cd $SCRIPT_DIR && sed -i 's/\\r$//' *.sh .conf.ini"
+fi
+
+# --- Byte order mark --------------------------------------------------------
+# A UTF-8 BOM before #!/bin/bash also breaks the shebang.
+BOM_FILES=()
+for f in "$SCRIPT_DIR"/*.sh; do
+    [[ -f "$f" ]] || continue
+    if [[ "$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')" == "efbbbf" ]]; then
+        BOM_FILES+=("$(basename "$f")")
+    fi
+done
+
+if (( ${#BOM_FILES[@]} == 0 )); then
+    check_pass "no UTF-8 BOM found in any script"
+else
+    check_fail "${#BOM_FILES[@]} file(s) start with a UTF-8 BOM: ${BOM_FILES[*]}"
+    log ERROR "  Fix without dos2unix:"
+    log ERROR "      cd $SCRIPT_DIR && sed -i '1s/^\\xEF\\xBB\\xBF//' *.sh"
+fi
 
 # =============================================================================
 # 4. CONFIGURATION

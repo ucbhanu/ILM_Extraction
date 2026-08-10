@@ -99,6 +99,11 @@ scripts/
 
 ## Prerequisites
 
+> **Line endings.** All files are stored with Unix (LF) endings and
+> [.gitattributes](.gitattributes) enforces `eol=lf`, so a `git clone` on Linux needs no
+> conversion and `dos2unix` is **not** required. If files are ever transferred by other
+> means and arrive with CRLF, `smoke_test.sh` detects it and prints a `sed` based fix.
+
 | Requirement | Notes |
 |---|---|
 | **bash 4.0+** | `logger.sh` uses `${var^^}` case conversion |
@@ -476,6 +481,7 @@ s3://{TARGET_S3_BUCKET}/stage/
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `/bin/bash^M: bad interpreter` | Files copied with Windows CRLF line endings | `sed -i 's/\r$//' *.sh .conf.ini` - works without `dos2unix` |
 | `cannot source logger.sh` | Script run from a copied location without the libraries | Keep all `*.sh` files together |
 | `Failed to source .conf.ini` | Missing config | `cp .conf.ini.example .conf.ini` |
 | `ssaadmin: command not found` | IDV environment not loaded | Check `IDV_HOME` and `ssaenv.sh` |
