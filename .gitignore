@@ -1,0 +1,13 @@
+# --- Local configuration (contains credentials) - never commit ---
+scripts/.conf.ini
+
+# --- Secrets ---
+**/.azure_sas
+*.sas
+*.sastoken
+
+# --- Runtime artifacts ---
+scripts/response.json
+scripts/*.raw
+scripts/.*_lambda_response_*.json
+scripts/batch_export.log
