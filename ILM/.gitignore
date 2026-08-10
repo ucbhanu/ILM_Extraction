@@ -1,6 +1,11 @@
 # --- Local configuration (contains credentials) - never commit ---
 scripts/.conf.ini
 
+# --- Secrets ---
+**/.azure_sas
+*.sas
+*.sastoken
+
 # --- Runtime artifacts ---
 scripts/response.json
 scripts/*.raw

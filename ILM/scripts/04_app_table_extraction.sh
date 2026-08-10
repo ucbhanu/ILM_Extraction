@@ -1,23 +1,11 @@
 #!/bin/bash
 
-# --- Logger Function ---
-log() {
-    local level="$1"
-    shift
-    local msg="$*"
-    local ts
-    ts=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[$ts] [$level] $msg" | tee -a "${LOG_FILE:-./batch_export.log}"
-}
-
-# --- Error Handler ---
-error_exit() {
-    log "ERROR" "$1"
-    exit 1
-}
+# --- Logger ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/logger.sh" || { echo "FATAL: cannot source logger.sh" >&2; exit 1; }
+log_trap_int
 
 # --- Configuration ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! . "$SCRIPT_DIR/.conf.ini"; then
     error_exit "Failed to source .conf.ini"
 fi
@@ -48,7 +36,8 @@ fi
 
 # --- Set log file for this table export ---
 LOG_TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-LOG_FILE="$LOG_DIR/${APP_NAME}_${LOG_TIMESTAMP}.log"
+log_init "$LOG_DIR/${APP_NAME}_${LOG_TIMESTAMP}.log" \
+    || error_exit "Failed to initialise log file in $LOG_DIR"
 
 log "INFO" "Application Name: $APP_NAME"
 

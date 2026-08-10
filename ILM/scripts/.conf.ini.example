@@ -81,3 +81,27 @@ export TARGET_S3_STAGE="$TARGET_S3_BUCKET/stage"
 export TEST_APP_NAME="<CHANGE_ME>"   # e.g. LIFEDOC_QA
 export TEST_ATT_DIR="<CHANGE_ME>"    # e.g. /ilmstage/LifeDoc/QA/Native/Batch1
 export TEST_ATT_NAME="<CHANGE_ME>"   # e.g. 0902bc3b8080585e.doc
+
+# =============================================================================
+# AZURE STORAGE - used by 07_s3_to_azure.sh
+# =============================================================================
+export AZURE_STORAGE_ACCOUNT="<CHANGE_ME>"   # e.g. ilmarchivestore
+export AZURE_CONTAINER="<CHANGE_ME>"         # e.g. ilm-export
+export AZURE_DEST_PREFIX="ilm-export"        # folder prefix inside the container
+
+# Transfer mode: direct (azcopy S3->Azure, needs AWS keys)
+#                staged (aws s3 sync -> local -> azcopy, works with IAM roles)
+export AZURE_TRANSFER_MODE="staged"
+
+# Auth mode: sas | spn | msi
+export AZURE_AUTH_MODE="sas"
+
+# SECURITY: never put the SAS token or client secret in this file.
+#   sas -> export AZURE_SAS_TOKEN in the shell, or point AZURE_SAS_FILE at a
+#          chmod 600 file containing only the token
+#   spn -> export AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+#   msi -> nothing else required
+export AZURE_SAS_FILE="<CHANGE_ME>"          # e.g. /efs/ILM_EXPORT/.azure_sas
+
+# Optional: full path to the azcopy binary if it is not on PATH
+#export AZCOPY_BIN="/opt/azcopy/azcopy"

@@ -1,8 +1,12 @@
 #!/bin/bash
 
-# --- Configuration ---
+# --- Logger ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SCRIPT_DIR/.conf.ini"
+. "$SCRIPT_DIR/logger.sh" || { echo "FATAL: cannot source logger.sh" >&2; exit 1; }
+log_trap_int
+
+# --- Configuration ---
+. "$SCRIPT_DIR/.conf.ini" || error_exit "Failed to source .conf.ini"
 OUTPUT_DIR=$ILM_METADATA_PATH
 
 
@@ -11,7 +15,9 @@ source "$IDV_HOME/ssaenv.sh"
 mkdir -p "$OUTPUT_DIR"
 chmod 766 $OUTPUT_DIR
 
-echo "Extracting metadata to $OUTPUT_DIR..."
+log_init "$LOG_PATH/applications_list_$(date '+%Y%m%d_%H%M%S').log"
+
+log INFO "Extracting metadata to $OUTPUT_DIR..."
 
 # 1. Get the list of all Archive Folders (Applications)
 ssaadmin "$ADMIN_USER/$ADMIN_PASS" <<EOF > $OUTPUT_DIR/all_dbs.raw
@@ -26,6 +32,6 @@ TOTAL_APP=$(wc -l < $OUTPUT_DIR/application_list.txt)
 
 # Cleanup
 rm $OUTPUT_DIR/all_dbs.raw 
-echo "Complete. All application list are in $OUTPUT_DIR"
+log INFO "Complete. All application list are in $OUTPUT_DIR"
 
-echo "Total Application $TOTAL_APP"
+log INFO "Total Application $TOTAL_APP"

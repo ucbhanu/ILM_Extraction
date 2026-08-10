@@ -1,26 +1,12 @@
 ﻿#!/bin/bash
 
-# --- Logger Function ---
-log() {
-    local level="$1"
-    shift
-    local msg="$*"
-    local ts
-    ts=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[$ts] [$level] $msg" | tee -a "${LOG_FILE:-./batch_export.log}"
-}
-
-# --- Error Handler ---
-error_exit() {
-    log "ERROR" "$1"
-    exit 1
-}
-
-# --- Trap SIGINT (Ctrl+C) ---
-trap 'log "ERROR" "Script interrupted by user (Ctrl+C). Exiting."; exit 130' INT
+# --- Logger ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/logger.sh" || { echo "FATAL: cannot source logger.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib_s3.sh" || { echo "FATAL: cannot source lib_s3.sh" >&2; exit 1; }
+log_trap_int
 
 # --- Configuration ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! . "$SCRIPT_DIR/.conf.ini"; then
     error_exit "Failed to source .conf.ini"
 fi
@@ -47,7 +33,8 @@ TARGET_PATH="$TARGET_S3_STAGE/$APP_NAME"
 
 # --- Set log file for this table export ---
 LOG_TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-LOG_FILE="$LOG_DIR/${APP_NAME}_COPY_TO_S3_${LOG_TIMESTAMP}.log"
+log_init "$LOG_DIR/${APP_NAME}_COPY_TO_S3_${LOG_TIMESTAMP}.log" \
+    || error_exit "Failed to initialise log file in $LOG_DIR"
 
 
 
@@ -104,6 +91,28 @@ log "INFO" "--------------------------------------------------------------------
 
 log "INFO" "All Data has been copied to below location"
 log "INFO" "Taget Location: $TARGET_PATH"
+log "INFO" "-----------------------------------------------------------------------------"
+
+# =============================================================================
+# Copy evidence, audit trail and logs so the transfer is self-documenting
+# =============================================================================
+log "INFO" "Copy Evidence, Audit Trail & Logs"
+
+s3_upload_dir "$ILM_METADATA_PATH/audit" "$TARGET_S3_STAGE/_audit" \
+    "audit trail" "$APP_NAME" "copy_to_s3"
+
+s3_upload_dir "$ILM_METADATA_PATH/evidence" "$TARGET_S3_STAGE/_evidence" \
+    "evidence set" "$APP_NAME" "copy_to_s3"
+
+# Application specific logs
+APP_LOG_STAGE="$LOG_DIR/.${APP_NAME}_stage_$$"
+mkdir -p "$APP_LOG_STAGE"
+find "$LOG_DIR" -maxdepth 1 -name "${APP_NAME}_*.log" -exec cp {} "$APP_LOG_STAGE/" \; 2>/dev/null || true
+s3_upload_dir "$APP_LOG_STAGE" "$TARGET_PATH/logs" \
+    "application logs" "$APP_NAME" "copy_to_s3"
+rm -rf "$APP_LOG_STAGE"
+
+log "INFO" "-----------------------------------------------------------------------------"
 
 SCRIPT_END_TIME=$(date +%s)
 TOTAL_TIME=$((SCRIPT_END_TIME - SCRIPT_START_TIME))
@@ -112,3 +121,7 @@ log "INFO" "********************************************************************
 log "INFO" "        				Copy data completed for APP: $APP_NAME"
 log "INFO" "        				Total time taken by script: ${TOTAL_TIME} seconds"
 log "INFO" "**************************************************************************************************************************************"
+
+# Final action: upload this script's own log
+s3_upload_file "$LOG_FILE" "$TARGET_PATH/logs/$(basename "$LOG_FILE")" \
+    "copy log" "$APP_NAME" "copy_to_s3" >/dev/null 2>&1 || true

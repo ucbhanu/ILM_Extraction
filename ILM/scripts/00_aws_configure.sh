@@ -20,14 +20,11 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # =============================================================================
-# LOGGER  (no log file — credentials must not be captured)
+# LOGGER  (console only — credentials must never be captured to a file)
 # =============================================================================
-log() {
-    local level="$1"; shift
-    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*"
-}
-error_exit() { log "ERROR" "$1"; exit 1; }
-trap 'log "ERROR" "Script interrupted (Ctrl+C). Exiting."; exit 130' INT
+. "$SCRIPT_DIR/logger.sh" || { echo "FATAL: cannot source logger.sh" >&2; exit 1; }
+LOG_FILE=""
+log_trap_int "Script interrupted (Ctrl+C). Exiting."
 
 # =============================================================================
 # 1. SOURCE .conf.ini

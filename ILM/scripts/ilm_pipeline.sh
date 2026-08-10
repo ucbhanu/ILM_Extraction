@@ -61,6 +61,35 @@ PIPELINE_START=$(date +%s)
 CREATED_BY="$(whoami)@$(hostname)"
 
 # =============================================================================
+# 0. LOGGER AND SUPPORT LIBRARIES
+# =============================================================================
+. "$SCRIPT_DIR/logger.sh"         || { echo "[FATAL] cannot source logger.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib_trace.sh"      || { echo "[FATAL] cannot source lib_trace.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib_checkpoint.sh" || { echo "[FATAL] cannot source lib_checkpoint.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib_progress.sh"   || { echo "[FATAL] cannot source lib_progress.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib_s3.sh"         || { echo "[FATAL] cannot source lib_s3.sh" >&2; exit 1; }
+
+TRACE_SCRIPT="ilm_pipeline.sh"
+
+# =============================================================================
+# 0. ARGUMENTS
+#      --resume   continue the last incomplete run, skipping completed work
+#      --fresh    ignore any previous checkpoint and start a new run
+# =============================================================================
+RESUME_MODE=false
+for arg in "$@"; do
+    case "$arg" in
+        --resume) RESUME_MODE=true ;;
+        --fresh)  RESUME_MODE=false ;;
+        -h|--help)
+            echo "Usage: bash ilm_pipeline.sh [--resume|--fresh]"
+            exit 0 ;;
+        *)
+            echo "[FATAL] Unknown argument: $arg" >&2; exit 1 ;;
+    esac
+done
+
+# =============================================================================
 # 0. SOURCE CONFIGURATION
 # =============================================================================
 if ! . "$SCRIPT_DIR/.conf.ini"; then
@@ -82,50 +111,46 @@ chmod 766 "$PIPELINE_LOG_DIR"
 LOG_TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 PIPELINE_LOG="$PIPELINE_LOG_DIR/ilm_pipeline_${LOG_TIMESTAMP}.log"
 
+log_init "$PIPELINE_LOG" || { echo "[FATAL] Cannot create $PIPELINE_LOG" >&2; exit 1; }
+
 # Export LOG_FILE so sub-scripts that honour this variable append to it too
 export LOG_FILE="$PIPELINE_LOG"
 
 # =============================================================================
+# 0. TRACEABILITY AND RESTARTABILITY
+# =============================================================================
+CKPT_ROOT="$ILM_METADATA_PATH/checkpoints"
+RESUME_RUN_ID=""
+
+if $RESUME_MODE; then
+    RESUME_RUN_ID="$(ckpt_last_run_id "$CKPT_ROOT")"
+    if [[ -n "$RESUME_RUN_ID" ]]; then
+        log INFO "Resuming previous run: $RESUME_RUN_ID"
+    else
+        log WARN "--resume requested but no incomplete run found; starting a new run"
+    fi
+fi
+
+trace_init "$ILM_METADATA_PATH" "$RESUME_RUN_ID" \
+    || { echo "[FATAL] Cannot initialise traceability context" >&2; exit 1; }
+ckpt_init "$CKPT_ROOT" "$RUN_ID" \
+    || { echo "[FATAL] Cannot initialise checkpoint context" >&2; exit 1; }
+
+RESUMED_UNITS=$(ckpt_count)
+
+# =============================================================================
 # FUNCTIONS
 # =============================================================================
+# log / step_banner / step_complete / error_exit / warn come from logger.sh
 
-# --- Logger ---
-log() {
-    local level="$1"; shift
-    local ts; ts=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[$ts] [$level] $*" | tee -a "$PIPELINE_LOG"
-}
-
-# --- Step Banner ---
-step_banner() {
-    local step="$1"; local title="$2"
-    log "STEP" "============================================================"
-    log "STEP" "  STEP ${step} : ${title}"
-    log "STEP" "============================================================"
-}
-
-# --- Step Complete ---
-step_complete() {
-    local step="$1"; local step_start="$2"
-    local duration=$(( $(date +%s) - step_start ))
-    log "STEP" "  [STEP ${step} COMPLETE] Duration: ${duration}s"
-    log "STEP" "------------------------------------------------------------"
-}
-
-# --- Fatal Error — stops the entire pipeline ---
-error_exit() {
-    log "FATAL" "$1"
-    log "FATAL" "Pipeline aborted. Log: $PIPELINE_LOG"
-    exit 1
-}
-
-# --- Warn — logs and continues ---
-warn() {
-    log "WARN" "$1"
+# --- Fail the run, recording the reason in the audit trail ------------------
+pipeline_abort() {
+    audit_event "pipeline" "" "run" "$RUN_ID" "abort" "FAILED" "" "" "$1"
+    error_exit "$1"
 }
 
 # --- Trap Ctrl+C ---
-trap 'log "FATAL" "Pipeline interrupted by user (Ctrl+C) at line $LINENO. Exiting."; exit 130' INT
+trap 'audit_event "pipeline" "" "run" "$RUN_ID" "interrupt" "ABORTED" "" "" "SIGINT received"; log "FATAL" "Pipeline interrupted by user (Ctrl+C). Resume with: bash ilm_pipeline.sh --resume"; exit 130' INT
 
 # =============================================================================
 # 0. VALIDATE REQUIRED SCRIPTS
@@ -135,9 +160,10 @@ REQUIRED_SCRIPTS=(
     "02_app_table_list.sh"
     "03_app_attachement_extraction.sh"
     "04_app_table_extraction.sh"
+    "reconcile.sh"
 )
 for s in "${REQUIRED_SCRIPTS[@]}"; do
-    [[ -f "$SCRIPT_DIR/$s" ]] || error_exit "Required script not found: $SCRIPT_DIR/$s"
+    [[ -f "$SCRIPT_DIR/$s" ]] || pipeline_abort "Required script not found: $SCRIPT_DIR/$s"
 done
 
 # =============================================================================
@@ -146,17 +172,29 @@ done
 APP_LIST_FILE="$ILM_METADATA_PATH/application_list.txt"
 PIPELINE_FILE_COUNT=0
 APP_COUNTER=0
+APPS_SKIPPED=0
+APPS_FAILED=0
+RECON_FAILED=0
 
 log "INFO" "################################################################"
 log "INFO" "#        ILM FULL EXPORT PIPELINE — STARTED                   #"
 log "INFO" "################################################################"
+log "INFO" "  Run ID      : $RUN_ID"
+log "INFO" "  Mode        : $( $RESUME_MODE && echo 'RESUME' || echo 'FRESH' )"
 log "INFO" "  Started By  : $CREATED_BY"
-log "INFO" "  Started At  : $(date '+%Y-%m-%d %H:%M:%S')"
+log "INFO" "  Started At  : $(date '+%Y-%m-%d %H:%M:%S')  ($(trace_utc))"
 log "INFO" "  Script Dir  : $SCRIPT_DIR"
 log "INFO" "  Export Path : $EXPORT_PATH"
 log "INFO" "  Metadata    : $ILM_METADATA_PATH"
 log "INFO" "  Pipeline Log: $PIPELINE_LOG"
+log "INFO" "  Audit Trail : $AUDIT_FILE"
+log "INFO" "  Evidence Dir: $EVIDENCE_DIR"
+log "INFO" "  Checkpoint  : $CKPT_FILE"
+log "INFO" "  Resumed Work: $RESUMED_UNITS unit(s) already complete"
 log "INFO" "################################################################"
+
+audit_event "pipeline" "" "run" "$RUN_ID" "start" "IN_PROGRESS" "" "" \
+    "Pipeline started by $CREATED_BY (resume=$RESUME_MODE)"
 
 # =============================================================================
 # STEP 1 — List ILM Applications
@@ -165,15 +203,28 @@ log "INFO" "################################################################"
 STEP1_START=$(date +%s)
 step_banner 1 "List ILM Applications"
 
-log "INFO" "Running: 01_applications_list.sh"
-if ! bash "$SCRIPT_DIR/01_applications_list.sh"; then
-    error_exit "01_applications_list.sh failed. Check sub-script output above."
+if ckpt_is_done "GLOBAL|applications_list"; then
+    log "INFO" "[RESUME] Step 1 already completed — skipping"
+    audit_event "step1" "" "script" "01_applications_list.sh" "skip" "SKIPPED" "" "" \
+        "Already completed in this run"
+else
+    log "INFO" "Running: 01_applications_list.sh"
+    if ! bash "$SCRIPT_DIR/01_applications_list.sh"; then
+        audit_event "step1" "" "script" "01_applications_list.sh" "execute" "FAILED" "" "" \
+            "Sub-script returned non-zero"
+        pipeline_abort "01_applications_list.sh failed. Check sub-script output above."
+    fi
+    ckpt_mark_done "GLOBAL|applications_list" "step 1"
+    audit_event "step1" "" "script" "01_applications_list.sh" "execute" "SUCCESS" "" "" \
+        "Application list generated"
 fi
 
-[[ -f "$APP_LIST_FILE" ]] || error_exit "Application list not found after step 1: $APP_LIST_FILE"
+[[ -f "$APP_LIST_FILE" ]] || pipeline_abort "Application list not found after step 1: $APP_LIST_FILE"
 TOTAL_APPS=$(grep -c . "$APP_LIST_FILE" || true)
 log "INFO" "Total applications found: $TOTAL_APPS"
 log "INFO" "Application list : $APP_LIST_FILE"
+audit_event "step1" "" "application_list" "$APP_LIST_FILE" "verify" "SUCCESS" \
+    "$TOTAL_APPS" "$(trace_filesize "$APP_LIST_FILE")" "Applications discovered"
 step_complete 1 $STEP1_START
 
 # =============================================================================
@@ -183,11 +234,27 @@ step_complete 1 $STEP1_START
 STEP2_START=$(date +%s)
 step_banner 2 "Generate Table Lists (all applications)"
 
-log "INFO" "Running: 02_app_table_list.sh"
-if ! bash "$SCRIPT_DIR/02_app_table_list.sh"; then
-    error_exit "02_app_table_list.sh failed. Check sub-script output above."
+if ckpt_is_done "GLOBAL|table_lists"; then
+    log "INFO" "[RESUME] Step 2 already completed — skipping"
+    audit_event "step2" "" "script" "02_app_table_list.sh" "skip" "SKIPPED" "" "" \
+        "Already completed in this run"
+else
+    log "INFO" "Running: 02_app_table_list.sh"
+    if ! bash "$SCRIPT_DIR/02_app_table_list.sh"; then
+        audit_event "step2" "" "script" "02_app_table_list.sh" "execute" "FAILED" "" "" \
+            "Sub-script returned non-zero"
+        pipeline_abort "02_app_table_list.sh failed. Check sub-script output above."
+    fi
+    ckpt_mark_done "GLOBAL|table_lists" "step 2"
+    audit_event "step2" "" "script" "02_app_table_list.sh" "execute" "SUCCESS" "" "" \
+        "Table lists generated"
 fi
 step_complete 2 $STEP2_START
+
+# =============================================================================
+# PROGRESS TRACKING across the per-application loop
+# =============================================================================
+progress_init "$TOTAL_APPS" "Applications"
 
 # =============================================================================
 # STEPS 3–7 — Per-Application Processing Loop
@@ -204,7 +271,21 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     log "INFO" ""
     log "INFO" ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
     log "INFO" "  APPLICATION [$APP_COUNTER / $TOTAL_APPS] : $APP_NAME"
+    log "INFO" "  Run ID: $RUN_ID"
     log "INFO" "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+
+    audit_event "application" "$APP_NAME" "application" "$APP_NAME" "start" "IN_PROGRESS" \
+        "" "" "Application $APP_COUNTER of $TOTAL_APPS"
+
+    # --- Restartability: skip an application that already finished ----------
+    if ckpt_is_done "$APP_NAME|COMPLETE"; then
+        log "INFO" "[RESUME] $APP_NAME already completed in this run — skipping"
+        audit_event "application" "$APP_NAME" "application" "$APP_NAME" "skip" "SKIPPED" \
+            "" "" "Completed in an earlier attempt of run $RUN_ID"
+        ((APPS_SKIPPED++))
+        progress_step "$APP_NAME (skipped)"
+        continue
+    fi
 
     # --- Paths ---
     TABLE_LIST_CSV="$ILM_METADATA_PATH/${APP_NAME}_table_list.csv"
@@ -217,6 +298,10 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     # --- Create per-app metadata directory ---
     if ! mkdir -p "$APP_META_DIR"; then
         warn "[$APP_NAME] Failed to create metadata dir $APP_META_DIR — skipping application"
+        audit_event "application" "$APP_NAME" "directory" "$APP_META_DIR" "create" "FAILED" \
+            "" "" "Cannot create metadata directory"
+        ((APPS_FAILED++))
+        progress_step "$APP_NAME (failed)"
         continue
     fi
     chmod 766 "$APP_META_DIR"
@@ -224,10 +309,16 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     # --- Validate table list ---
     if [[ ! -f "$TABLE_LIST_CSV" ]]; then
         warn "[$APP_NAME] Table list CSV not found: $TABLE_LIST_CSV — skipping application"
+        audit_event "application" "$APP_NAME" "table_list" "$TABLE_LIST_CSV" "read" "FAILED" \
+            "" "" "Table list missing"
+        ((APPS_FAILED++))
+        progress_step "$APP_NAME (failed)"
         continue
     fi
     TABLE_TOTAL=$(( $(wc -l < "$TABLE_LIST_CSV") - 1 ))
     log "INFO" "[$APP_NAME] Table list : $TABLE_LIST_CSV ($TABLE_TOTAL table(s))"
+    audit_event "application" "$APP_NAME" "table_list" "$TABLE_LIST_CSV" "read" "SUCCESS" \
+        "$TABLE_TOTAL" "$(trace_filesize "$TABLE_LIST_CSV")" "Table list validated"
 
     # =========================================================================
     # STEP 3 — Generate Attachment List from DB (AM_ATTACHMENTS)
@@ -239,6 +330,11 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     ATT_STEP_OK=true
     ATT_RAW_TMP="$APP_META_DIR/${APP_NAME}_att_query.tmp"
 
+    if ckpt_is_done "$APP_NAME|attachment_list" && [[ -f "$APP_ATT_LIST" ]]; then
+        log "INFO" "[RESUME] [$APP_NAME] Attachment list already generated — skipping"
+        audit_event "step3" "$APP_NAME" "attachment_list" "$APP_ATT_LIST" "skip" "SKIPPED" \
+            "" "" "Already generated in this run"
+    else
     log "INFO" "[$APP_NAME] Querying AM_ATTACHMENTS in DB: $APP_NAME"
     if ! ssasql fas "$APP_NAME" "$DB_USER/$DB_PASS" <<SSASQL >"$ATT_RAW_TMP" 2>&1
 alter session set systemcatalog=0;
@@ -249,12 +345,16 @@ alter session set systemcatalog=0;
 SSASQL
     then
         warn "[$APP_NAME] ssasql query for AM_ATTACHMENTS returned non-zero exit — attachment extraction skipped"
+        audit_event "step3" "$APP_NAME" "attachment_list" "$APP_ATT_LIST" "query" "FAILED" \
+            "" "" "ssasql returned non-zero"
         ATT_STEP_OK=false
     fi
     rm -f "$ATT_RAW_TMP"
 
     if $ATT_STEP_OK && [[ ! -f "$APP_ATT_LIST" ]]; then
         warn "[$APP_NAME] Attachment list CSV was not created by ssasql — attachment extraction skipped"
+        audit_event "step3" "$APP_NAME" "attachment_list" "$APP_ATT_LIST" "query" "FAILED" \
+            "" "" "Output CSV not created"
         ATT_STEP_OK=false
     fi
 
@@ -265,6 +365,12 @@ SSASQL
             sed -i '1i ATTACHMENT_DIRECTORY,ATTACHMENT_NAME' "$APP_ATT_LIST"
         fi
         log "INFO" "[$APP_NAME] Attachment list saved : $APP_ATT_LIST ($ATT_ROW_COUNT record(s))"
+        ckpt_mark_done "$APP_NAME|attachment_list" "$ATT_ROW_COUNT records"
+        audit_event "step3" "$APP_NAME" "attachment_list" "$APP_ATT_LIST" "query" "SUCCESS" \
+            "$ATT_ROW_COUNT" "$(trace_filesize "$APP_ATT_LIST")" "Attachment list generated"
+        evidence_add "$APP_NAME" "metadata" "$APP_ATT_LIST" \
+            "$TARGET_S3_STAGE/$APP_NAME/metadata/$(basename "$APP_ATT_LIST")" "$ATT_ROW_COUNT"
+    fi
     fi
     step_complete 3 $STEP3_START
 
@@ -275,15 +381,26 @@ SSASQL
     STEP4_START=$(date +%s)
     step_banner 4 "[$APP_NAME] Extract Attachments"
 
-    if $ATT_STEP_OK; then
+    if ckpt_is_done "$APP_NAME|attachment_extract"; then
+        log "INFO" "[RESUME] [$APP_NAME] Attachments already extracted — skipping"
+        audit_event "step4" "$APP_NAME" "attachment" "ALL" "skip" "SKIPPED" "" "" \
+            "Already extracted in this run"
+    elif $ATT_STEP_OK; then
         log "INFO" "[$APP_NAME] Running: 03_app_attachement_extraction.sh $APP_ATT_LIST"
         if ! bash "$SCRIPT_DIR/03_app_attachement_extraction.sh" "$APP_ATT_LIST"; then
             warn "[$APP_NAME] 03_app_attachement_extraction.sh completed with errors — see sub-script log"
+            audit_event "step4" "$APP_NAME" "attachment" "ALL" "extract" "FAILED" "" "" \
+                "Sub-script returned non-zero"
         else
             log "INFO" "[$APP_NAME] Attachment extraction completed successfully"
+            ckpt_mark_done "$APP_NAME|attachment_extract" "lambda extraction"
+            audit_event "step4" "$APP_NAME" "attachment" "ALL" "extract" "SUCCESS" "" "" \
+                "Attachments dispatched to Lambda"
         fi
     else
         log "INFO" "[$APP_NAME] Attachment extraction skipped (no attachment list generated)"
+        audit_event "step4" "$APP_NAME" "attachment" "ALL" "extract" "SKIPPED" "" "" \
+            "No attachment list available"
     fi
     step_complete 4 $STEP4_START
 
@@ -295,11 +412,22 @@ SSASQL
     STEP5_START=$(date +%s)
     step_banner 5 "[$APP_NAME] Extract Tables"
 
-    log "INFO" "[$APP_NAME] Running: 04_app_table_extraction.sh $TABLE_LIST_CSV"
-    if ! bash "$SCRIPT_DIR/04_app_table_extraction.sh" "$TABLE_LIST_CSV"; then
-        warn "[$APP_NAME] 04_app_table_extraction.sh completed with errors — see sub-script log"
+    if ckpt_is_done "$APP_NAME|table_extract"; then
+        log "INFO" "[RESUME] [$APP_NAME] Tables already extracted — skipping"
+        audit_event "step5" "$APP_NAME" "table" "ALL" "skip" "SKIPPED" "$TABLE_TOTAL" "" \
+            "Already extracted in this run"
     else
-        log "INFO" "[$APP_NAME] Table extraction completed successfully"
+        log "INFO" "[$APP_NAME] Running: 04_app_table_extraction.sh $TABLE_LIST_CSV"
+        if ! bash "$SCRIPT_DIR/04_app_table_extraction.sh" "$TABLE_LIST_CSV"; then
+            warn "[$APP_NAME] 04_app_table_extraction.sh completed with errors — see sub-script log"
+            audit_event "step5" "$APP_NAME" "table" "ALL" "extract" "FAILED" "$TABLE_TOTAL" "" \
+                "Sub-script returned non-zero"
+        else
+            log "INFO" "[$APP_NAME] Table extraction completed successfully"
+            ckpt_mark_done "$APP_NAME|table_extract" "$TABLE_TOTAL tables"
+            audit_event "step5" "$APP_NAME" "table" "ALL" "extract" "SUCCESS" "$TABLE_TOTAL" "" \
+                "Tables exported to CSV"
+        fi
     fi
     step_complete 5 $STEP5_START
 
@@ -339,6 +467,10 @@ SSASQL
             "$APP_NAME/$SRC_DB" "$CSV_FILE" \
             "$REPORT_TS" "$CREATED_BY" >> "$META_REPORT"
 
+        # GxP evidence: checksum every extracted data file
+        evidence_add "$APP_NAME" "table" "$CSV_FILE" \
+            "$TARGET_S3_STAGE/$APP_NAME/tabledata/$FNAME" "$FCOUNT"
+
     done < <(find "$EXPORT_PATH" -path "*/$APP_NAME/*.csv" -type f -print0 2>/dev/null)
 
     log "INFO" "[$APP_NAME] Table entries in metadata report: $TABLE_META_COUNT"
@@ -376,6 +508,13 @@ SSASQL
     log "INFO" "[$APP_NAME]   -> Table entries : $TABLE_META_COUNT"
     log "INFO" "[$APP_NAME]   -> Attach entries: $ATT_META_COUNT"
     log "INFO" "[$APP_NAME]   -> Total entries : $SRNO"
+
+    audit_event "step6" "$APP_NAME" "metadata_report" "$META_REPORT" "generate" "SUCCESS" \
+        "$SRNO" "$(trace_filesize "$META_REPORT")" \
+        "tables=$TABLE_META_COUNT attachments=$ATT_META_COUNT"
+    evidence_add "$APP_NAME" "metadata" "$META_REPORT" \
+        "$TARGET_S3_STAGE/$APP_NAME/metadata/$(basename "$META_REPORT")" "$SRNO"
+    ckpt_mark_done "$APP_NAME|metadata_report" "$SRNO entries"
     step_complete 6 $STEP6_START
 
     # =========================================================================
@@ -466,16 +605,50 @@ SSASQL
 
     if [[ $COPY_ERRORS -eq 0 ]]; then
         log "INFO" "[$APP_NAME] All data successfully copied to: $APP_S3_TARGET"
+        ckpt_mark_done "$APP_NAME|s3_copy" "copied to $APP_S3_TARGET"
+        audit_event "step7" "$APP_NAME" "s3_upload" "$APP_S3_TARGET" "copy" "SUCCESS" \
+            "" "" "All artifacts uploaded"
     else
         warn "[$APP_NAME] S3 copy completed with $COPY_ERRORS error(s)"
+        audit_event "step7" "$APP_NAME" "s3_upload" "$APP_S3_TARGET" "copy" "FAILED" \
+            "" "" "$COPY_ERRORS copy error(s)"
     fi
     step_complete 7 $STEP7_START
 
+    # =========================================================================
+    # STEP 8 — Reconciliation and GxP Evidence
+    #           Output: evidence/<RUN_ID>/reconciliation_<APP>.csv
+    #                   evidence/<RUN_ID>/validation_summary_<APP>.txt
+    # =========================================================================
+    STEP8_START=$(date +%s)
+    step_banner 8 "[$APP_NAME] Reconciliation & Evidence"
+
+    if bash "$SCRIPT_DIR/reconcile.sh" "$APP_NAME" "$RUN_ID"; then
+        log "INFO" "[$APP_NAME] Reconciliation PASSED"
+        audit_event "step8" "$APP_NAME" "reconciliation" "$APP_NAME" "verify" "PASS" "" "" \
+            "Source/extract/target counts reconciled"
+    else
+        warn "[$APP_NAME] Reconciliation FAILED — review evidence before release"
+        audit_event "step8" "$APP_NAME" "reconciliation" "$APP_NAME" "verify" "FAIL" "" "" \
+            "Discrepancies detected"
+        ((RECON_FAILED++))
+    fi
+    step_complete 8 $STEP8_START
+
+    # --- Application complete: checkpoint so a resume skips it --------------
+    ckpt_mark_done "$APP_NAME|COMPLETE" "application finished"
+
     APP_LOOP_DURATION=$(( $(date +%s) - APP_LOOP_START ))
     log "INFO" "[$APP_NAME] Application total time : ${APP_LOOP_DURATION}s"
+    audit_event "application" "$APP_NAME" "application" "$APP_NAME" "complete" "SUCCESS" \
+        "$APP_TOTAL_FILES" "" "Duration ${APP_LOOP_DURATION}s"
+
+    progress_step "$APP_NAME"
     log "INFO" ""
 
 done < "$APP_LIST_FILE"
+
+progress_finish "all applications processed"
 
 # =============================================================================
 # STEP 7G — Copy Global ILM Metadata & Pipeline Logs to S3
@@ -534,15 +707,96 @@ step_complete "7G" $STEP7G_START
 # =============================================================================
 PIPELINE_DURATION=$(( $(date +%s) - PIPELINE_START ))
 
+# --- Seal the GxP evidence set (checksums + read-only) ----------------------
+evidence_finalize
+
+PIPELINE_STATUS="SUCCESS"
+(( APPS_FAILED > 0 || RECON_FAILED > 0 )) && PIPELINE_STATUS="COMPLETED_WITH_ERRORS"
+
+audit_event "pipeline" "" "run" "$RUN_ID" "complete" "$PIPELINE_STATUS" \
+    "$PIPELINE_FILE_COUNT" "" \
+    "apps=$APP_COUNTER skipped=$APPS_SKIPPED failed=$APPS_FAILED recon_failed=$RECON_FAILED duration=${PIPELINE_DURATION}s"
+
 log "INFO" "################################################################"
 log "INFO" "#        ILM FULL EXPORT PIPELINE — COMPLETE                  #"
 log "INFO" "################################################################"
-log "INFO" "  Completed At           : $(date '+%Y-%m-%d %H:%M:%S')"
+log "INFO" "  Run ID                 : $RUN_ID"
+log "INFO" "  Status                 : $PIPELINE_STATUS"
+log "INFO" "  Completed At           : $(date '+%Y-%m-%d %H:%M:%S')  ($(trace_utc))"
 log "INFO" "  Run By                 : $CREATED_BY"
 log "INFO" "  Applications Processed : $APP_COUNTER / $TOTAL_APPS"
+log "INFO" "  Applications Skipped   : $APPS_SKIPPED (already complete)"
+log "INFO" "  Applications Failed    : $APPS_FAILED"
+log "INFO" "  Reconciliation Failures: $RECON_FAILED"
 log "INFO" "  Total Files Tracked    : $PIPELINE_FILE_COUNT"
 log "INFO" "  Total Duration         : ${PIPELINE_DURATION}s"
+log "INFO" "----------------------------------------------------------------"
+log "INFO" "  TRACEABILITY & EVIDENCE"
 log "INFO" "  Pipeline Log           : $PIPELINE_LOG"
+log "INFO" "  Audit Trail            : $AUDIT_FILE"
+log "INFO" "  Evidence Directory     : $EVIDENCE_DIR"
+log "INFO" "  Evidence Seal          : $EVIDENCE_DIR/MANIFEST.sha256"
+log "INFO" "  Checkpoint File        : $CKPT_FILE"
 log "INFO" "  Metadata Reports       : $ILM_METADATA_PATH/<APP>/<APP>_metadata_${LOG_TIMESTAMP}.csv"
 log "INFO" "  S3 Stage Location      : $TARGET_S3_STAGE"
 log "INFO" "################################################################"
+
+# =============================================================================
+# STEP 9 — Transfer Evidence, Audit Trail and Logs to S3
+#           Runs AFTER the evidence set is sealed so the checksums, the
+#           reconciliation reports and the audit trail are all preserved in S3
+#           alongside the data they describe.
+#
+#           audit trail  -> s3://{TARGET_S3_STAGE}/_audit/
+#           evidence set -> s3://{TARGET_S3_STAGE}/_evidence/{RUN_ID}/
+#           checkpoints  -> s3://{TARGET_S3_STAGE}/_checkpoints/{RUN_ID}/
+#           all logs     -> s3://{TARGET_S3_STAGE}/logs/{RUN_ID}/
+# =============================================================================
+STEP9_START=$(date +%s)
+step_banner 9 "Transfer Evidence, Audit Trail & Logs to S3"
+
+EVIDENCE_S3_ERRORS=0
+
+s3_upload_dir "$AUDIT_DIR" "$TARGET_S3_STAGE/_audit" "audit trail" "" "step9"
+[[ $? -eq 1 ]] && ((EVIDENCE_S3_ERRORS++))
+
+s3_upload_dir "$EVIDENCE_DIR" "$TARGET_S3_STAGE/_evidence/$RUN_ID" "evidence set" "" "step9"
+[[ $? -eq 1 ]] && ((EVIDENCE_S3_ERRORS++))
+
+s3_upload_dir "$CKPT_DIR" "$TARGET_S3_STAGE/_checkpoints/$RUN_ID" "checkpoints" "" "step9"
+[[ $? -eq 1 ]] && ((EVIDENCE_S3_ERRORS++))
+
+s3_upload_dir "$LOG_PATH" "$TARGET_S3_STAGE/logs/$RUN_ID" "all logs" "" "step9"
+[[ $? -eq 1 ]] && ((EVIDENCE_S3_ERRORS++))
+
+if (( EVIDENCE_S3_ERRORS > 0 )); then
+    warn "Evidence/log transfer completed with $EVIDENCE_S3_ERRORS error(s)"
+    PIPELINE_STATUS="COMPLETED_WITH_ERRORS"
+else
+    log "INFO" "Evidence, audit trail and logs transferred to S3 and verified"
+fi
+step_complete 9 $STEP9_START
+
+# --- Clear the resume pointer only when the whole run, including the
+#     evidence transfer, completed cleanly -----------------------------------
+if [[ "$PIPELINE_STATUS" == "SUCCESS" ]]; then
+    ckpt_complete
+fi
+
+log "INFO" "  Evidence in S3         : $TARGET_S3_STAGE/_evidence/$RUN_ID"
+log "INFO" "  Audit trail in S3      : $TARGET_S3_STAGE/_audit"
+log "INFO" "  Logs in S3             : $TARGET_S3_STAGE/logs/$RUN_ID"
+log "INFO" "  Final status           : $PIPELINE_STATUS"
+log "INFO" "################################################################"
+
+# --- Final action: upload this pipeline log itself (last write wins) --------
+s3_upload_file "$PIPELINE_LOG" \
+    "$TARGET_S3_STAGE/logs/$RUN_ID/$(basename "$PIPELINE_LOG")" \
+    "pipeline log" "" "step9" >/dev/null 2>&1 || true
+
+if [[ "$PIPELINE_STATUS" != "SUCCESS" ]]; then
+    log "WARN" "Run did not complete cleanly. Resume with: bash ilm_pipeline.sh --resume"
+    exit 1
+fi
+
+exit 0

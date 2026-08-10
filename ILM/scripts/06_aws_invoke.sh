@@ -10,10 +10,14 @@
 #    bash 06_aws_invoke.sh <APP_NAME> <ATT_DIR> <ATT_NAME>   # override at runtime
 # =============================================================================
 
-# --- Configuration ---
+# --- Logger ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/logger.sh" || { echo "FATAL: cannot source logger.sh" >&2; exit 1; }
+log_trap_int
+
+# --- Configuration ---
 if ! . "$SCRIPT_DIR/.conf.ini"; then
-    echo "ERROR: Failed to source .conf.ini" >&2; exit 1
+    error_exit "Failed to source .conf.ini"
 fi
 
 # =============================================================================
@@ -30,27 +34,25 @@ MISSING=()
 [[ -z "$NAME"        || "$NAME"        == "<CHANGE_ME>" ]] && MISSING+=("TEST_ATT_NAME")
 [[ -z "$LAMBDA_FUNC" || "$LAMBDA_FUNC" == "<CHANGE_ME>" ]] && MISSING+=("LAMBDA_FUNC")
 if [[ ${#MISSING[@]} -gt 0 ]]; then
-    echo "ERROR: The following values are not set in .conf.ini:" >&2
-    for v in "${MISSING[@]}"; do echo "  - $v" >&2; done
-    echo "Or pass them as arguments: $0 <APP_NAME> <ATT_DIR> <ATT_NAME>" >&2
-    exit 1
+    log ERROR "The following values are not set in .conf.ini:"
+    for v in "${MISSING[@]}"; do log ERROR "  - $v"; done
+    error_exit "Or pass them as arguments: $0 <APP_NAME> <ATT_DIR> <ATT_NAME>"
 fi
 
-echo "Lambda      : $LAMBDA_FUNC"
-echo "Region      : $AWS_REGION"
-echo "Application : $APP_NAME"
-echo "Directory   : $DIR"
-echo "Filename    : $NAME"
-echo "------------------------------------------------------------"
+log INFO "Lambda      : $LAMBDA_FUNC"
+log INFO "Region      : $AWS_REGION"
+log INFO "Application : $APP_NAME"
+log INFO "Directory   : $DIR"
+log INFO "Filename    : $NAME"
+log_line
 
 # 1. Add automatic startdate
 STARTDATE=$(date '+%Y-%m-%dT%H:%M:%S')
 
 # 2. Ensure AWS credentials are set and valid
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
-  echo "ERROR: AWS credentials are not set or are invalid. Please configure your AWS CLI with valid credentials."
-  echo "To configure, run: bash 00_aws_configure.sh"
-  exit 1
+  log ERROR "AWS credentials are not set or are invalid."
+  error_exit "To configure, run: bash 00_aws_configure.sh"
 fi
 
 # --- Response file (cleaned up on exit) ---
@@ -67,7 +69,7 @@ PAYLOAD=$(printf '{
       "status": "QUEUED"
     }' "$APP_NAME" "$APP_NAME/$STARTDATE" "$DIR" "$NAME")
 
-echo "PAYLOAD: $PAYLOAD"
+log INFO "PAYLOAD: $PAYLOAD"
 
 # 4. Invoke Lambda
 if ! aws lambda invoke \
@@ -76,11 +78,10 @@ if ! aws lambda invoke \
 --cli-binary-format raw-in-base64-out \
 --region "$AWS_REGION" \
 "$RESPONSE_FILE"; then
-    echo "ERROR: Lambda invocation failed for $LAMBDA_FUNC" >&2
-    exit 1
+    error_exit "Lambda invocation failed for $LAMBDA_FUNC"
 fi
 
-cat "$RESPONSE_FILE"
+log INFO "Raw response: $(cat "$RESPONSE_FILE")"
 
 # 1. Clean the string: remove outer quotes and convert \" to "
 clean_data=$(sed 's/^"//; s/"$//; s/\\"/"/g' "$RESPONSE_FILE")
@@ -91,6 +92,6 @@ bucket=$(echo "$clean_data" | sed -n 's/.*"s3bucketname" : "\([^"]*\)".*/\1/p')
 key=$(echo "$clean_data" | sed -n 's/.*"key" : "\([^"]*\)".*/\1/p')
 
 # 3. Output the results
-echo "Status:     $status"
-echo "S3 Bucket:  $bucket"
-echo "Export Loc: $key"
+log INFO "Status:     $status"
+log INFO "S3 Bucket:  $bucket"
+log INFO "Export Loc: $key"
