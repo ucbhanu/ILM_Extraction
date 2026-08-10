@@ -40,6 +40,11 @@ export LOG_PATH="/efs/ILM_EXPORT/logs"
 # Set to 0 for unattended / scheduled runs.
 export APP_PAUSE_SECONDS=3
 
+# The attachment Lambda accepts work as QUEUED and writes to S3 asynchronously.
+# Before mirroring attachments the pipeline waits until the source object count
+# stops growing, up to this many seconds. Set to 0 to disable the wait.
+export ATT_WAIT_MAX_SECONDS=60
+
 # -----------------------------------------------------------------------------
 # AWS
 # -----------------------------------------------------------------------------

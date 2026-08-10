@@ -177,42 +177,69 @@ log INFO "2. Attachment reconciliation"
 log_line
 
 ATT_LIST="$ILM_METADATA_PATH/$APP_NAME/${APP_NAME}_attachment_list.csv"
+ATT_ROWS=0
 ATT_EXPECTED=0
-
-if [[ -f "$ATT_LIST" ]]; then
-    ATT_EXPECTED=$(( $(wc -l < "$ATT_LIST") - 1 ))
-    (( ATT_EXPECTED < 0 )) && ATT_EXPECTED=0
-else
-    log WARN "  Attachment list not found: $ATT_LIST"
-fi
+ATT_MISSING=0
+declare -A ATT_SEEN=()
+MISSING_ATT_FILES=()
 
 # NOTE: use `grep -v ... | wc -l`, never `grep -vc`.
 # `grep -vc` prints 0 AND exits 1 on empty input, so any `|| echo 0` fallback
 # fires too and the variable ends up as "0\n0", breaking (( )) comparisons.
-ATT_S3_COUNT="$(aws s3 ls "$APP_S3_TARGET/attachements/" --recursive \
-                --region "$AWS_REGION" 2>/dev/null | grep -v ' PRE ' | wc -l | tr -d '[:space:]')"
+ATT_S3_LISTING="$(aws s3 ls "$APP_S3_TARGET/attachements/" --recursive \
+                  --region "$AWS_REGION" 2>/dev/null)"
+ATT_S3_COUNT="$(printf '%s' "$ATT_S3_LISTING" | grep -v ' PRE ' | grep -c . | tr -d '[:space:]')"
 
-log INFO "  Attachments expected in list : $ATT_EXPECTED"
+if [[ -f "$ATT_LIST" ]]; then
+    # Verify by NAME, not by count. The list can contain the same attachment
+    # more than once, and duplicates collapse to a single S3 object - a count
+    # comparison would report a false discrepancy.
+    while IFS=',' read -r A_DIR A_NAME A_REST || [[ -n "$A_DIR" ]]; do
+        A_NAME="$(echo "$A_NAME" | xargs)"
+        [[ -z "$A_NAME" ]] && continue
+        ATT_ROWS=$((ATT_ROWS+1))
+
+        [[ -n "${ATT_SEEN[$A_NAME]:-}" ]] && continue     # duplicate row
+        ATT_SEEN["$A_NAME"]=1
+        ATT_EXPECTED=$((ATT_EXPECTED+1))
+
+        if ! printf '%s' "$ATT_S3_LISTING" | grep -Fq "/$A_NAME"; then
+            ATT_MISSING=$((ATT_MISSING+1))
+            MISSING_ATT_FILES+=("$A_NAME")
+        fi
+    done < <(tail -n +2 "$ATT_LIST")
+else
+    log WARN "  Attachment list not found: $ATT_LIST"
+fi
+
+ATT_DUPLICATES=$(( ATT_ROWS - ATT_EXPECTED ))
+
+log INFO "  Rows in attachment list      : $ATT_ROWS"
+log INFO "  Unique attachments expected  : $ATT_EXPECTED"
+(( ATT_DUPLICATES > 0 )) && \
+    log INFO "  Duplicate rows ignored       : $ATT_DUPLICATES"
 log INFO "  Attachment objects in S3     : $ATT_S3_COUNT"
+log INFO "  Expected files missing in S3 : $ATT_MISSING"
 
-# S3 accumulates objects across runs, so completeness means "every expected
-# attachment is present", not "the counts are identical".
 if (( ATT_EXPECTED == 0 )); then
     record_result "attachment" "ALL" "0" "0" "$ATT_S3_COUNT" "0" "NA" "PASS" \
         "no attachments expected"
     log INFO "  [PASS] no attachments expected for this application"
-elif (( ATT_S3_COUNT >= ATT_EXPECTED )); then
+elif (( ATT_MISSING == 0 )); then
     EXTRA_NOTE=""
-    (( ATT_S3_COUNT > ATT_EXPECTED )) && \
-        EXTRA_NOTE="s3 holds $(( ATT_S3_COUNT - ATT_EXPECTED )) additional object(s) from previous runs"
-    record_result "attachment" "ALL" "$ATT_EXPECTED" "$ATT_EXPECTED" "$ATT_S3_COUNT" \
+    (( ATT_DUPLICATES > 0 )) && EXTRA_NOTE="$ATT_DUPLICATES duplicate row(s) in source list"
+    record_result "attachment" "ALL" "$ATT_ROWS" "$ATT_EXPECTED" "$ATT_S3_COUNT" \
         "0" "NA" "PASS" "$EXTRA_NOTE"
     log INFO "  [PASS] all $ATT_EXPECTED expected attachment(s) present in S3"
-    [[ -n "$EXTRA_NOTE" ]] && log INFO "  Note: $EXTRA_NOTE"
 else
-    record_result "attachment" "ALL" "$ATT_EXPECTED" "$ATT_EXPECTED" "$ATT_S3_COUNT" \
-        "0" "NA" "FAIL" "missing $(( ATT_EXPECTED - ATT_S3_COUNT )) attachment(s) in S3"
-    log WARN "  [FAIL] $(( ATT_EXPECTED - ATT_S3_COUNT )) attachment(s) missing in S3 (expected=$ATT_EXPECTED s3=$ATT_S3_COUNT)"
+    record_result "attachment" "ALL" "$ATT_ROWS" "$ATT_EXPECTED" "$ATT_S3_COUNT" \
+        "0" "NA" "FAIL" "$ATT_MISSING expected attachment(s) not found in S3"
+    log WARN "  [FAIL] $ATT_MISSING expected attachment(s) not found in S3:"
+    for m in "${MISSING_ATT_FILES[@]:0:25}"; do
+        log WARN "      - $m"
+    done
+    (( ATT_MISSING > 25 )) && log WARN "      ... and $(( ATT_MISSING - 25 )) more"
+    log WARN "  Check the Lambda extraction log for these files."
 fi
 
 [[ -f "$ATT_LIST" ]] && evidence_add "$APP_NAME" "metadata" "$ATT_LIST" \
@@ -256,11 +283,11 @@ log INFO "  Local files missing in S3: $META_MISSING"
 if (( META_MISSING == 0 )); then
     EXTRA_NOTE=""
     (( META_S3 > META_LOCAL )) && \
-        EXTRA_NOTE="s3 holds $(( META_S3 - META_LOCAL )) additional object(s) from previous runs"
+        EXTRA_NOTE="s3 holds $(( META_S3 - META_LOCAL )) object(s) not present locally - unexpected after a mirror"
     record_result "metadata" "ALL" "$META_LOCAL" "$META_LOCAL" "$META_S3" "0" "NA" "PASS" \
         "$EXTRA_NOTE"
     log INFO "  [PASS] all $META_LOCAL local metadata file(s) present in S3"
-    [[ -n "$EXTRA_NOTE" ]] && log INFO "  Note: $EXTRA_NOTE"
+    [[ -n "$EXTRA_NOTE" ]] && log WARN "  Note: $EXTRA_NOTE"
 else
     record_result "metadata" "ALL" "$META_LOCAL" "$META_LOCAL" "$META_S3" "0" "NA" "FAIL" \
         "$META_MISSING local file(s) not found in S3"

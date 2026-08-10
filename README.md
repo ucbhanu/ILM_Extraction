@@ -149,6 +149,7 @@ vi .conf.ini
 | `ILM_METADATA_PATH` | Metadata, audit, evidence, checkpoints | `/efs/ILM_EXPORT/ilm_metadata` |
 | `LOG_PATH` | Log destination | `/efs/ILM_EXPORT/logs` |
 | `APP_PAUSE_SECONDS` | Pause before each application so progress is readable. `0` for unattended runs | `3` |
+| `ATT_WAIT_MAX_SECONDS` | Wait for the asynchronous attachment Lambda to finish writing before mirroring. `0` disables | `60` |
 | `AWS_REGION` | AWS region | `eu-central-1` |
 | `AWS_PROFILE` | Optional named profile | |
 | `ENV` | `qa` or `prod` - part of the run ID | `qa` |
@@ -222,6 +223,12 @@ tooling, paths, permissions and AWS access before any data is touched.
 | 7 | Copy data, metadata and logs to S3 | `{stage}/{APP}/` |
 | 8 | Reconciliation and evidence | `reconciliation_{APP}.csv` |
 | 9 | Transfer evidence, audit trail and logs to S3 | `{stage}/_evidence/`, `_audit/`, `logs/` |
+
+**Transfer semantics.** Application data, attachments and metadata are mirrored with
+`aws s3 sync --delete`, so the S3 target is an *exact* copy of the source: changed
+files overwrite the target and stale objects are removed. Every mirror is then
+verified by object count. The audit trail, evidence and logs are uploaded
+**additively** and are never deleted, because they must accumulate across runs.
 
 **Error handling.** Failures in steps 1 and 2 are fatal. Per-application failures in
 steps 3-8 are logged as warnings, recorded in the audit trail, and the pipeline
