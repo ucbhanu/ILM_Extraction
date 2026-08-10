@@ -41,12 +41,12 @@ __ILM_LOGGER_SOURCED=1
 # --- Level -> numeric severity ----------------------------------------------
 __log_severity() {
     case "${1^^}" in
-        DEBUG)        echo 10 ;;
-        INFO|STEP)    echo 20 ;;
-        WARN|WARNING) echo 30 ;;
-        ERROR)        echo 40 ;;
-        FATAL)        echo 50 ;;
-        *)            echo 20 ;;
+        DEBUG)          echo 10 ;;
+        INFO|STEP|APP)  echo 20 ;;
+        WARN|WARNING)   echo 30 ;;
+        ERROR)          echo 40 ;;
+        FATAL)          echo 50 ;;
+        *)              echo 20 ;;
     esac
 }
 
@@ -64,6 +64,7 @@ __log_color_for() {
         DEBUG) printf '\033[2m'    ;;  # dim
         INFO)  printf '\033[0m'    ;;  # default
         STEP)  printf '\033[1;34m' ;;  # bold blue
+        APP)   printf '\033[0;32m' ;;  # dark green - application banners
         WARN)  printf '\033[0;33m' ;;  # yellow
         ERROR) printf '\033[0;31m' ;;  # red
         FATAL) printf '\033[1;31m' ;;  # bold red
@@ -159,6 +160,7 @@ log_info()  { log INFO  "$@"; }
 log_warn()  { log WARN  "$@"; }
 log_error() { log ERROR "$@"; }
 log_step()  { log STEP  "$@"; }
+log_app()   { log APP   "$@"; }
 
 # --- Separators / banners ----------------------------------------------------
 log_line() {

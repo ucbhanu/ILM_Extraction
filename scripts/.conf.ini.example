@@ -34,6 +34,13 @@ export TMP_LOG="/efs/ILM_EXPORT/temp"
 export LOG_PATH="/efs/ILM_EXPORT/logs"
 
 # -----------------------------------------------------------------------------
+# RUNTIME BEHAVIOUR
+# -----------------------------------------------------------------------------
+# Seconds to pause before each application so progress is readable on screen.
+# Set to 0 for unattended / scheduled runs.
+export APP_PAUSE_SECONDS=3
+
+# -----------------------------------------------------------------------------
 # AWS
 # -----------------------------------------------------------------------------
 # AWS Region (e.g. eu-central-1)

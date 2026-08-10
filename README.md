@@ -143,6 +143,7 @@ vi .conf.ini
 | `EXPORT_PATH` | EFS root for extracted CSVs | `/efs/ILM_EXPORT` |
 | `ILM_METADATA_PATH` | Metadata, audit, evidence, checkpoints | `/efs/ILM_EXPORT/ilm_metadata` |
 | `LOG_PATH` | Log destination | `/efs/ILM_EXPORT/logs` |
+| `APP_PAUSE_SECONDS` | Pause before each application so progress is readable. `0` for unattended runs | `3` |
 | `AWS_REGION` | AWS region | `eu-central-1` |
 | `AWS_PROFILE` | Optional named profile | |
 | `ENV` | `qa` or `prod` - part of the run ID | `qa` |
@@ -221,6 +222,15 @@ tooling, paths, permissions and AWS access before any data is touched.
 steps 3-8 are logged as warnings, recorded in the audit trail, and the pipeline
 continues to the next application. The run exits non-zero if any application failed
 or any reconciliation failed.
+
+**Empty tables.** `ssasql` writes no file when a result set is empty. This is a valid
+outcome, so `04_app_table_extraction.sh` creates a header-only CSV and counts the
+table as extracted with 0 rows. A missing file *without* a `0 rows fetched` marker is
+treated as a genuine failure and reported.
+
+Both `03_app_attachement_extraction.sh` and `04_app_table_extraction.sh` print a
+per-application summary (processed / exported / empty / failed) and exit non-zero if
+any item failed, listing the failures.
 
 ---
 
@@ -395,6 +405,9 @@ error_exit "unrecoverable"     # logs FATAL and exits 1
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL` |
 | `LOG_COLOR` | `auto` | `auto`, `always`, `never` |
 
+Levels are colourised on a TTY: `STEP` bold blue, `APP` dark green (application
+banners), `WARN` yellow, `ERROR` red, `FATAL` bold red, `DEBUG` dim.
+
 `WARN`, `ERROR` and `FATAL` are written to **stderr** so they survive stdout redirection.
 
 ---
@@ -467,7 +480,8 @@ s3://{TARGET_S3_BUCKET}/stage/
 | `Failed to source .conf.ini` | Missing config | `cp .conf.ini.example .conf.ini` |
 | `ssaadmin: command not found` | IDV environment not loaded | Check `IDV_HOME` and `ssaenv.sh` |
 | Placeholder values reported | `<CHANGE_ME>` left in config | Complete `.conf.ini` |
-| `No CSV produced for <TABLE>` | `ssasql .export bulk` wrote nothing | Check the logged ssasql output; an empty table or rejected export statement are the usual causes |
+| `No CSV produced for <TABLE>` | `ssasql` wrote nothing and did not report `0 rows fetched` | Check the logged ssasql output - the export statement was likely rejected |
+| Table CSV contains only a header row | Source table is empty (`0 rows fetched`) | Expected behaviour - the header-only CSV keeps the extract complete |
 | Lambda `AccessDeniedException` on `GetFunction` | Only a warning | Ignore - `InvokeFunction` is what matters |
 | Empty path segments in S3 keys | `$APP_NAME` appended in config | Remove it from `EXPORT_LOC` / `SOURCE_PATH` |
 | `07_s3_to_azure.sh is FUTURE SCOPE` | Azure transfer disabled by design | Uncomment the `AZURE_*` block and set `AZURE_TRANSFER_ENABLED=true` |

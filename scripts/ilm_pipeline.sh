@@ -268,11 +268,20 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     ((APP_COUNTER++))
     APP_LOOP_START=$(date +%s)
 
+    # --- Visual separation so each application is easy to spot -------------
     log "INFO" ""
-    log "INFO" ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-    log "INFO" "  APPLICATION [$APP_COUNTER / $TOTAL_APPS] : $APP_NAME"
-    log "INFO" "  Run ID: $RUN_ID"
-    log "INFO" "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+    log "INFO" ""
+    log "INFO" ""
+    log APP "================================================================"
+    log APP "================================================================"
+    log APP "    APPLICATION [$APP_COUNTER / $TOTAL_APPS] : $APP_NAME"
+    log APP "    Run ID: $RUN_ID"
+    log APP "================================================================"
+    log APP "================================================================"
+    log "INFO" ""
+
+    # --- Pause so the operator can follow progress on screen ---------------
+    sleep "${APP_PAUSE_SECONDS:-3}"
 
     audit_event "application" "$APP_NAME" "application" "$APP_NAME" "start" "IN_PROGRESS" \
         "" "" "Application $APP_COUNTER of $TOTAL_APPS"
