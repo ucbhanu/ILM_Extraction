@@ -54,12 +54,27 @@ TRACE_SCRIPT="reconcile.sh"
 
 RECON_FILE="$EVIDENCE_DIR/reconciliation_${APP_NAME}.csv"
 SUMMARY_FILE="$EVIDENCE_DIR/validation_summary_${APP_NAME}.txt"
+TABLE_DETAIL_FILE="$EVIDENCE_DIR/table_validation_${APP_NAME}.csv"
 
 APP_S3_TARGET="$TARGET_S3_STAGE/$APP_NAME"
 
 TOTAL_CHECKS=0
 PASS_CHECKS=0
 FAIL_CHECKS=0
+TABLE_DETAIL_LINES=()
+
+file_mtime_utc() {
+    local f="$1"
+    local epoch=""
+    epoch="$(stat -c '%Y' "$f" 2>/dev/null || true)"
+    [[ -z "$epoch" ]] && { printf 'NA'; return 0; }
+    date -u -d "@$epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 'NA'
+}
+
+file_owner_name() {
+    local f="$1"
+    stat -c '%U' "$f" 2>/dev/null || printf 'NA'
+}
 
 log INFO "############################################################"
 log INFO "#  RECONCILIATION - $APP_NAME"
@@ -73,6 +88,10 @@ audit_event "reconcile" "$APP_NAME" "run" "$RUN_ID" "start" "IN_PROGRESS" "" "" 
 # --- Reconciliation detail header ---
 printf 'run_id,application,object_type,object_name,source_count,extracted_count,s3_count,size_bytes,sha256,status,discrepancy,checked_utc\n' \
     > "$RECON_FILE"
+
+# --- Table validation detail header ---
+printf 'Sr No,Table Name,Column Count,Row Count,Row Count With Header,Extracted Datetime,Extracted By\n' \
+    > "$TABLE_DETAIL_FILE"
 
 # =============================================================================
 #  record_result <type> <name> <src> <ext> <s3> <bytes> <sha> <status> <note>
@@ -110,14 +129,17 @@ S3_TABLE_LISTING="$(aws s3 ls "$APP_S3_TARGET/tabledata/" --recursive \
                     --region "$AWS_REGION" 2>/dev/null)"
 
 if [[ -f "$TABLE_LIST_CSV" ]]; then
+    TABLE_SRNO=0
     while IFS=',' read -r DB_NAME TID TABLE_NAME TYPE || [[ -n "$DB_NAME" ]]; do
         DB_NAME="$(echo "$DB_NAME" | xargs)"
         TABLE_NAME="$(echo "$TABLE_NAME" | xargs | tr -d '"')"
         [[ -z "$TABLE_NAME" ]] && continue
 
         TABLES_EXPECTED=$((TABLES_EXPECTED+1))
+        TABLE_SRNO=$((TABLE_SRNO+1))
 
         CSV_PATH="$EXPORT_PATH/$DB_NAME/${TABLE_NAME}.csv"
+        FULL_TABLE_NAME="$DB_NAME.$TABLE_NAME"
 
         if [[ -f "$CSV_PATH" ]]; then
             RAW_LINES="$(wc -l < "$CSV_PATH" 2>/dev/null || echo 0)"
@@ -125,6 +147,15 @@ if [[ -f "$TABLE_LIST_CSV" ]]; then
             FSIZE="$(trace_filesize "$CSV_PATH")"
             FSHA="$(trace_sha256 "$CSV_PATH")"
             TABLES_FOUND=$((TABLES_FOUND+1))
+
+            COL_COUNT="$(awk -F',' 'NR==1{print NF; exit}' "$CSV_PATH" 2>/dev/null)"
+            [[ -z "$COL_COUNT" ]] && COL_COUNT=0
+            EXTRACTED_UTC="$(file_mtime_utc "$CSV_PATH")"
+            EXTRACTED_BY="$(file_owner_name "$CSV_PATH")"
+            TABLE_DETAIL_LINES+=("$TABLE_SRNO,$FULL_TABLE_NAME,$COL_COUNT,$EXTRACTED,$RAW_LINES,$EXTRACTED_UTC,$EXTRACTED_BY")
+            printf '%s,%s,%s,%s,%s,%s,%s\n' \
+                "$TABLE_SRNO" "$FULL_TABLE_NAME" "$COL_COUNT" "$EXTRACTED" "$RAW_LINES" "$EXTRACTED_UTC" "$EXTRACTED_BY" \
+                >> "$TABLE_DETAIL_FILE"
 
             if printf '%s' "$S3_TABLE_LISTING" | grep -Fq "/${TABLE_NAME}.csv"; then
                 S3_CNT=1
@@ -149,6 +180,10 @@ if [[ -f "$TABLE_LIST_CSV" ]]; then
                 log WARN "  [FAIL] $TABLE_NAME - extracted but missing in S3"
             fi
         else
+            TABLE_DETAIL_LINES+=("$TABLE_SRNO,$FULL_TABLE_NAME,0,0,0,NA,NA")
+            printf '%s,%s,%s,%s,%s,%s,%s\n' \
+                "$TABLE_SRNO" "$FULL_TABLE_NAME" "0" "0" "0" "NA" "NA" \
+                >> "$TABLE_DETAIL_FILE"
             record_result "table" "$TABLE_NAME" "unknown" "0" "0" "0" "NA" "FAIL" \
                 "CSV not produced"
             log WARN "  [FAIL] $TABLE_NAME - no CSV produced at $CSV_PATH"
@@ -323,6 +358,17 @@ OVERALL="PASS"
     echo "  Metadata local     : $META_LOCAL"
     echo "  Metadata in S3     : $META_S3"
     echo "------------------------------------------------------------"
+    echo "  TABLE EXTRACTION DETAILS"
+    echo "------------------------------------------------------------"
+    echo "  Sr No,Table Name,Column Count,Row Count,Row Count With Header,Extracted Datetime,Extracted By"
+    if (( ${#TABLE_DETAIL_LINES[@]} > 0 )); then
+        for tbl_line in "${TABLE_DETAIL_LINES[@]}"; do
+            echo "  $tbl_line"
+        done
+    else
+        echo "  NA"
+    fi
+    echo "------------------------------------------------------------"
     echo "  RECONCILIATION RESULT"
     echo "------------------------------------------------------------"
     echo "  Checks performed   : $TOTAL_CHECKS"
@@ -333,6 +379,7 @@ OVERALL="PASS"
     echo "  EVIDENCE ARTIFACTS"
     echo "------------------------------------------------------------"
     echo "  Reconciliation     : $RECON_FILE"
+    echo "  Table validation   : $TABLE_DETAIL_FILE"
     echo "  Evidence manifest  : $EVIDENCE_DIR/manifest_${APP_NAME}.csv"
     echo "  Audit trail        : $AUDIT_FILE"
     echo "  Target S3 location : $APP_S3_TARGET"
