@@ -11,3 +11,6 @@ scripts/response.json
 scripts/*.raw
 scripts/.*_lambda_response_*.json
 scripts/batch_export.log
+
+# --- Automation runtime logs ---
+automation/logs/

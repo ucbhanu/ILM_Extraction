@@ -17,6 +17,7 @@ The pipeline extracts database tables and document attachments for every archive
 - [Prerequisites](#prerequisites)
 - [Configuration](#configuration)
 - [Quick start](#quick-start)
+- [AWS automation (scheduled runs)](#aws-automation-scheduled-runs)
 - [Script reference](#script-reference)
 - [Pipeline stages](#pipeline-stages)
 - [Traceability and audit trail](#traceability-and-audit-trail)
@@ -71,6 +72,11 @@ flowchart TD
 ## Repository structure
 
 ```
+automation/
+├── render_conf_from_ssm.sh   # Render scripts/.conf.ini from SSM parameters
+├── run_pipeline_scheduled.sh # Scheduled runner: render config, smoke test, pipeline
+└── setup_eventbridge_ssm.sh  # Create/update EventBridge Scheduler -> SSM trigger
+
 scripts/
 ├── .conf.ini                 # Live configuration (git-ignored, contains secrets)
 ├── .conf.ini.example         # Template - copy to .conf.ini and fill in
@@ -187,6 +193,18 @@ bash ilm_pipeline.sh --resume
 
 Always run `smoke_test.sh` first on a new host. It validates syntax, configuration,
 tooling, paths, permissions and AWS access before any data is touched.
+
+---
+
+## AWS automation (scheduled runs)
+
+For unattended execution on AWS, use the automation scripts in the repository root:
+
+- `automation/render_conf_from_ssm.sh` renders `scripts/.conf.ini` from AWS Systems Manager Parameter Store.
+- `automation/run_pipeline_scheduled.sh` runs config render, `smoke_test.sh`, then `ilm_pipeline.sh`.
+- `automation/setup_eventbridge_ssm.sh` creates or updates an EventBridge Scheduler job that triggers SSM RunCommand on your ILM runner EC2 host.
+
+See `README_AUTOMATION.md` for the complete setup (IAM permissions, required SSM parameters, schedule creation, and first-run validation).
 
 ---
 
