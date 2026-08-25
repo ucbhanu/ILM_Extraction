@@ -20,6 +20,17 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Normalize CRLF to LF in-place so copied scripts run on Linux without dos2unix.
+normalize_to_unix() {
+    local f="$1"
+    [[ -f "$f" ]] || return 0
+    awk '{ sub(/\r$/, ""); print }' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+}
+
+for _f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/.conf.ini "$SCRIPT_DIR"/.conf.ini.example; do
+    normalize_to_unix "$_f"
+done
+
 # --- Logger ---
 . "$SCRIPT_DIR/logger.sh" || { echo "FATAL: cannot source logger.sh" >&2; exit 1; }
 log_trap_int
@@ -127,8 +138,9 @@ if (( ${#CRLF_FILES[@]} == 0 )); then
     check_pass "all scripts use Unix (LF) line endings"
 else
     check_fail "${#CRLF_FILES[@]} file(s) contain Windows (CRLF) line endings: ${CRLF_FILES[*]}"
-    log ERROR "  Fix without dos2unix:"
-    log ERROR "      cd $SCRIPT_DIR && sed -i 's/\\r$//' *.sh .conf.ini"
+    log WARN  "  Automatic fix is applied when running ilm_pipeline.sh or smoke_test.sh."
+    log WARN  "  Optional manual fix (no dos2unix needed):"
+    log WARN  "      cd $SCRIPT_DIR && sed -i 's/\\r$//' *.sh .conf.ini"
 fi
 
 # --- Byte order mark --------------------------------------------------------

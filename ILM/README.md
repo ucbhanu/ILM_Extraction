@@ -108,7 +108,8 @@ scripts/
 > **Line endings.** All files are stored with Unix (LF) endings and
 > [.gitattributes](.gitattributes) enforces `eol=lf`, so a `git clone` on Linux needs no
 > conversion and `dos2unix` is **not** required. If files are ever transferred by other
-> means and arrive with CRLF, `smoke_test.sh` detects it and prints a `sed` based fix.
+> means and arrive with CRLF, `ilm_pipeline.sh` and `smoke_test.sh` auto-normalize scripts
+> and config to LF at startup.
 
 | Requirement | Notes |
 |---|---|

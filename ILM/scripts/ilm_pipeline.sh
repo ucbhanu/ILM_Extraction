@@ -60,6 +60,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE_START=$(date +%s)
 CREATED_BY="$(whoami)@$(hostname)"
 
+# Normalize CRLF to LF in-place so copied scripts run on Linux without dos2unix.
+normalize_to_unix() {
+    local f="$1"
+    [[ -f "$f" ]] || return 0
+    awk '{ sub(/\r$/, ""); print }' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+}
+
+for _f in "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/.conf.ini "$SCRIPT_DIR"/.conf.ini.example; do
+    normalize_to_unix "$_f"
+done
+
 # =============================================================================
 # 0. LOGGER AND SUPPORT LIBRARIES
 # =============================================================================
