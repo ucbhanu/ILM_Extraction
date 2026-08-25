@@ -25,7 +25,9 @@ dbs
 exit
 EOF
 
-grep -E '^[[:space:]]+[0-9]+' $OUTPUT_DIR/all_dbs.raw | awk '{print $2}' > $OUTPUT_DIR/application_list.txt
+# Sorted alphabetically so that every downstream step (table lists, extraction,
+# reconciliation) processes applications in a stable, predictable order.
+grep -E '^[[:space:]]+[0-9]+' $OUTPUT_DIR/all_dbs.raw | awk '{print $2}' | sort > $OUTPUT_DIR/application_list.txt
 chmod 766 $OUTPUT_DIR/application_list.txt
 
 TOTAL_APP=$(wc -l < $OUTPUT_DIR/application_list.txt)
@@ -34,4 +36,4 @@ TOTAL_APP=$(wc -l < $OUTPUT_DIR/application_list.txt)
 rm $OUTPUT_DIR/all_dbs.raw 
 log INFO "Complete. All application list are in $OUTPUT_DIR"
 
-log INFO "Total Application $TOTAL_APP"
+log INFO "Total Application $TOTAL_APP (sorted alphabetically)"

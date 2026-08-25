@@ -21,6 +21,10 @@ TABLE_LIST=$1
 
 # Variables
 COUNTER=0
+EXPORTED_COUNT=0
+EMPTY_COUNT=0
+FAILED_COUNT=0
+FAILED_TABLES=()
 APP_NAME=$(basename "$TABLE_LIST" | sed 's/_table_list.csv//')
 
 # logging path
@@ -50,7 +54,9 @@ log "INFO" "        				Starting Batch Export into DB-specific folders..."
 log "INFO" "        				Application Name: $APP_NAME"
 log "INFO" "**************************************************************************************************************************************"
 # 2. Iterate through the CSV (skipping header)
-tail -n +2 "$TABLE_LIST" | while IFS=',' read -r DB_NAME TID TABLE_NAME TYPE || [[ -n "$DB_NAME" ]]; do
+#    Process substitution (not a pipe) keeps the loop in the current shell so
+#    the counters below survive past the loop.
+while IFS=',' read -r DB_NAME TID TABLE_NAME TYPE || [[ -n "$DB_NAME" ]]; do
     
     # Clean variables
 	((COUNTER++))
@@ -65,10 +71,12 @@ tail -n +2 "$TABLE_LIST" | while IFS=',' read -r DB_NAME TID TABLE_NAME TYPE || 
     TARGET_DIR="$EXPORT_PATH/$DB_NAME"
     if ! mkdir -p "$TARGET_DIR"; then
         log "ERROR" "Failed to create directory $TARGET_DIR"
+        ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (mkdir failed)")
         continue
     fi
     if ! chmod 766 "$TARGET_DIR"; then
         log "ERROR" "Failed to set permissions on $TARGET_DIR"
+        ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (chmod failed)")
         continue
     fi
 	
@@ -106,6 +114,7 @@ ORDER BY c.colno;
 EOF
     then
         log "ERROR" "Failed to get column headers for $TABLE_NAME"
+        ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (header query failed)")
         continue
     fi
 
@@ -115,6 +124,7 @@ EOF
     if [[ -z "$columns" ]]; then
         log "ERROR" "No columns found for $TABLE_NAME"
         rm -f "$TARGET_DIR/${TABLE_NAME}_header.raw"
+        ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (no columns)")
         continue
     fi
 	#echo -e "$columns" > "$TARGET_DIR/${TABLE_NAME}.csv"
@@ -128,7 +138,8 @@ EOF
 	
 	# 8. Run ssasql with explicit schema setting
 	log "INFO" "Table Data extraction started..."
-    if ! ssasql fas "$DB_NAME" "$DB_USER/$DB_PASS" <<EOF 
+	EXPORT_RAW="$TARGET_DIR/${TABLE_NAME}_export.raw"
+    if ! ssasql fas "$DB_NAME" "$DB_USER/$DB_PASS" <<EOF >"$EXPORT_RAW" 2>&1
 alter session set systemcatalog=0;
 .set width 1048576;
 .set long 1048576;
@@ -137,16 +148,54 @@ alter session set systemcatalog=0;
 .exit;
 EOF
     then
-        log "ERROR" "Failed to export data for $TABLE_NAME"
+        log "ERROR" "Failed to export data for $TABLE_NAME (ssasql returned non-zero)"
+        log "ERROR" "ssasql output: $(tail -n 10 "$EXPORT_RAW" 2>/dev/null | tr '\n' ' ')"
+        rm -f "$EXPORT_RAW"
+        ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (export failed)")
         continue
     fi
 
-	# 9. merge column with data
-	log "INFO" "Merging Header with Table Data..."
-    if ! sed -i "1i $columns" "$TARGET_DIR/${TABLE_NAME}.csv"; then
-        log "ERROR" "Failed to prepend header to $TARGET_DIR/${TABLE_NAME}.csv"
+	# 8b. Handle the export result.
+	#     ssasql writes NO file when the result set is empty ("0 rows fetched").
+	#     That is a valid outcome, not an error, so we create a header-only CSV
+	#     to keep the extract complete and reconciliation consistent.
+    if [[ -f "$TARGET_DIR/${TABLE_NAME}.csv" ]]; then
+
+        # 9. merge column headers with the exported data
+        log "INFO" "Merging Header with Table Data..."
+        if ! sed -i "1i $columns" "$TARGET_DIR/${TABLE_NAME}.csv"; then
+            log "ERROR" "Failed to prepend header to $TARGET_DIR/${TABLE_NAME}.csv"
+            rm -f "$EXPORT_RAW"
+            ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (header merge failed)")
+            continue
+        fi
+        ((EXPORTED_COUNT++))
+
+    elif grep -qiE '0 rows fetched|no rows selected' "$EXPORT_RAW" 2>/dev/null; then
+
+        # Empty table - write the header row only
+        log "INFO" "Table is empty (0 rows) - creating header-only CSV"
+        if ! printf '%s\n' "$columns" > "$TARGET_DIR/${TABLE_NAME}.csv"; then
+            log "ERROR" "Failed to create header-only CSV for $TABLE_NAME"
+            rm -f "$EXPORT_RAW"
+            ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (empty CSV write failed)")
+            continue
+        fi
+        ((EMPTY_COUNT++))
+
+    else
+
+        # No file and no "0 rows" marker - this is a genuine failure
+        log "ERROR" "No CSV produced for $TABLE_NAME at $TARGET_DIR/${TABLE_NAME}.csv"
+        log "ERROR" "ssasql said: $(tail -n 10 "$EXPORT_RAW" 2>/dev/null | tr '\n' ' ')"
+        log "ERROR" "Table skipped - reconciliation will report it as missing."
+        rm -f "$EXPORT_RAW"
+        ((FAILED_COUNT++)); FAILED_TABLES+=("$TABLE_NAME (no output)")
         continue
     fi
+
+    rm -f "$EXPORT_RAW"
+    chmod 766 "$TARGET_DIR/${TABLE_NAME}.csv" 2>/dev/null || true
 	
 	# 10. Count exported rows (excluding header)
     export_count=$(($(wc -l < "$TARGET_DIR/${TABLE_NAME}.csv") - 1))
@@ -155,13 +204,27 @@ EOF
 	log "INFO" "Table ${TABLE_NAME} exported."
 	log "INFO" "----------------------------------------------------------------------------------------------------"
     sleep 1
-done
+done < <(tail -n +2 "$TABLE_LIST")
 
 # --- End timer and print total time taken ---
 SCRIPT_END_TIME=$(date +%s)
 TOTAL_TIME=$((SCRIPT_END_TIME - SCRIPT_START_TIME))
 
 log "INFO" "**************************************************************************************************************************************"
-log "INFO" "						Batch processing complete."
+log "INFO" "						Batch processing complete for APP: $APP_NAME"
+log "INFO" "						Tables processed      : $COUNTER"
+log "INFO" "						Exported with data    : $EXPORTED_COUNT"
+log "INFO" "						Empty (header only)   : $EMPTY_COUNT"
+log "INFO" "						Failed                : $FAILED_COUNT"
 log "INFO" "						Total time taken by script: ${TOTAL_TIME} seconds"
 log "INFO" "**************************************************************************************************************************************"
+
+if (( FAILED_COUNT > 0 )); then
+    log "WARN" "The following table(s) failed:"
+    for t in "${FAILED_TABLES[@]}"; do
+        log "WARN" "  - $t"
+    done
+    exit 1
+fi
+
+exit 0

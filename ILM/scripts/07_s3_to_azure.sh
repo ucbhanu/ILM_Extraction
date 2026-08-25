@@ -2,6 +2,16 @@
 # =============================================================================
 #  07_s3_to_azure.sh  —  Transfer ILM export data from AWS S3 to Azure Storage
 #
+#  ⚠  FUTURE SCOPE — NOT ACTIVE
+#     The S3 -> Azure movement is planned for a later phase and is deliberately
+#     NOT called by ilm_pipeline.sh. The Azure configuration block in .conf.ini
+#     is commented out, so this script will refuse to run until it is enabled.
+#
+#     To activate later:
+#       1. Uncomment the AZURE_* block in .conf.ini and fill in the values
+#       2. Set AZURE_TRANSFER_ENABLED="true"
+#       3. Install azcopy (and optionally the az CLI for verification)
+#
 #  Copies the staged ILM export (data, metadata, evidence, audit trail and
 #  logs) from the S3 stage prefix into an Azure Blob Storage container, then
 #  reconciles the object counts and records the transfer in the audit trail.
@@ -47,6 +57,21 @@ if ! . "$SCRIPT_DIR/.conf.ini"; then
 fi
 
 TRACE_SCRIPT="07_s3_to_azure.sh"
+
+# =============================================================================
+# FEATURE FLAG — this capability is future scope and disabled by default
+# =============================================================================
+if [[ "${AZURE_TRANSFER_ENABLED:-false}" != "true" ]]; then
+    echo ""
+    echo "  07_s3_to_azure.sh is FUTURE SCOPE and is currently disabled."
+    echo ""
+    echo "  The S3 -> Azure movement is not part of the active pipeline."
+    echo "  To enable it:"
+    echo "    1. Uncomment the AZURE_* block in .conf.ini and fill in the values"
+    echo "    2. Set AZURE_TRANSFER_ENABLED=\"true\""
+    echo ""
+    exit 0
+fi
 
 # =============================================================================
 # ARGUMENTS

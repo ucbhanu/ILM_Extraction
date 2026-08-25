@@ -14,7 +14,7 @@
 #
 #    2.  Generate table lists for all applications
 #          → Runs: 02_app_table_list.sh
-#          → Output: $ILM_METADATA_PATH/{APP}_table_list.csv (per app)
+#          → Output: $ILM_METADATA_PATH/{APP}/{APP}_table_list.csv (per app)
 #
 #    ── Per-Application Loop (steps 3–7) ──────────────────────────────────
 #
@@ -229,7 +229,7 @@ step_complete 1 $STEP1_START
 
 # =============================================================================
 # STEP 2 — Generate Table Lists for All Applications
-#           Output: $ILM_METADATA_PATH/{APP}_table_list.csv
+#           Output: $ILM_METADATA_PATH/{APP}/{APP}_table_list.csv
 # =============================================================================
 STEP2_START=$(date +%s)
 step_banner 2 "Generate Table Lists (all applications)"
@@ -268,11 +268,20 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     ((APP_COUNTER++))
     APP_LOOP_START=$(date +%s)
 
+    # --- Visual separation so each application is easy to spot -------------
     log "INFO" ""
-    log "INFO" ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-    log "INFO" "  APPLICATION [$APP_COUNTER / $TOTAL_APPS] : $APP_NAME"
-    log "INFO" "  Run ID: $RUN_ID"
-    log "INFO" "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+    log "INFO" ""
+    log "INFO" ""
+    log APP "================================================================"
+    log APP "================================================================"
+    log APP "    APPLICATION [$APP_COUNTER / $TOTAL_APPS] : $APP_NAME"
+    log APP "    Run ID: $RUN_ID"
+    log APP "================================================================"
+    log APP "================================================================"
+    log "INFO" ""
+
+    # --- Pause so the operator can follow progress on screen ---------------
+    sleep "${APP_PAUSE_SECONDS:-3}"
 
     audit_event "application" "$APP_NAME" "application" "$APP_NAME" "start" "IN_PROGRESS" \
         "" "" "Application $APP_COUNTER of $TOTAL_APPS"
@@ -288,10 +297,11 @@ while IFS= read -r APP_NAME || [[ -n "$APP_NAME" ]]; do
     fi
 
     # --- Paths ---
-    TABLE_LIST_CSV="$ILM_METADATA_PATH/${APP_NAME}_table_list.csv"
     APP_META_DIR="$ILM_METADATA_PATH/$APP_NAME"
+    # Table list and attachment list both live under $ILM_METADATA_PATH/{APP}/
     # NOTE: 03_app_attachement_extraction.sh derives APP_NAME from dirname of the
     # attachment list, so the CSV MUST be placed inside a directory named $APP_NAME
+    TABLE_LIST_CSV="$APP_META_DIR/${APP_NAME}_table_list.csv"
     APP_ATT_LIST="$APP_META_DIR/${APP_NAME}_attachment_list.csv"
     APP_EXPORT_DIR="$EXPORT_PATH/$APP_NAME"
 
@@ -536,12 +546,10 @@ SSASQL
     SRC_TABLE_COUNT=$(find "$EXPORT_PATH/$APP_NAME" -type f 2>/dev/null | wc -l)
     log "INFO" "[$APP_NAME] Source table files: $SRC_TABLE_COUNT"
     if [[ "$SRC_TABLE_COUNT" -gt 0 ]]; then
-        if ! aws s3 cp "$EXPORT_PATH/$APP_NAME" "$APP_S3_TARGET/tabledata" --recursive; then
-            warn "[$APP_NAME] Failed to copy table data to S3"
+        if ! s3_mirror "$EXPORT_PATH/$APP_NAME" "$APP_S3_TARGET/tabledata" \
+                "$APP_NAME table data" "$APP_NAME" "step7a"; then
+            warn "[$APP_NAME] Failed to mirror table data to S3"
             ((COPY_ERRORS++))
-        else
-            TBL_S3=$(aws s3 ls "$APP_S3_TARGET/tabledata/" --recursive | grep -v ' PRE ' | wc -l)
-            log "INFO" "[$APP_NAME] Table files uploaded: $TBL_S3"
         fi
     else
         log "INFO" "[$APP_NAME] No local table data found — skipping"
@@ -550,15 +558,41 @@ SSASQL
 
     # ── 7b. Copy attachments (S3 bulk-download bucket → S3 ilm-export) ───────
     log "INFO" "[$APP_NAME] [7b] Copying attachments (S3 -> S3)..."
-    SRC_ATT_S3=$(aws s3 ls "$ATT_S3_BUCKET/$APP_NAME/" --recursive 2>/dev/null | grep -v ' PRE ' | wc -l || echo 0)
+
+    # The Lambda accepts work with status QUEUED and writes to S3 asynchronously,
+    # so objects can still be arriving. Wait until the source object count stops
+    # growing (or the timeout expires) before mirroring, otherwise the transfer
+    # captures only a partial set.
+    ATT_WAIT_MAX="${ATT_WAIT_MAX_SECONDS:-60}"
+    if (( ATT_WAIT_MAX > 0 )); then
+        ATT_PREV=-1
+        ATT_STABLE=0
+        ATT_WAITED=0
+        while (( ATT_WAITED < ATT_WAIT_MAX )); do
+            ATT_NOW=$(s3_count "$ATT_S3_BUCKET/$APP_NAME/")
+            if (( ATT_NOW == ATT_PREV )); then
+                ATT_STABLE=$((ATT_STABLE+1))
+                (( ATT_STABLE >= 2 )) && break
+            else
+                ATT_STABLE=0
+            fi
+            ATT_PREV=$ATT_NOW
+            sleep 5
+            ATT_WAITED=$((ATT_WAITED+5))
+        done
+        log "INFO" "[$APP_NAME] Attachment source settled after ${ATT_WAITED}s"
+    fi
+
+    SRC_ATT_S3=$(s3_count "$ATT_S3_BUCKET/$APP_NAME/")
     log "INFO" "[$APP_NAME] Source attachment files in S3: $SRC_ATT_S3"
     if [[ "$SRC_ATT_S3" -gt 0 ]]; then
-        if ! aws s3 cp "$ATT_S3_BUCKET/$APP_NAME" "$APP_S3_TARGET/attachements" --recursive; then
+        # Additive, NOT a mirror. The bulk-download bucket is transient and may
+        # expire objects; mirroring with --delete would erase attachments that
+        # were already archived here by an earlier run.
+        if ! s3_sync_additive "$ATT_S3_BUCKET/$APP_NAME" "$APP_S3_TARGET/attachements" \
+                "$APP_NAME attachments" "$APP_NAME" "step7b"; then
             warn "[$APP_NAME] Failed to copy attachments to S3"
             ((COPY_ERRORS++))
-        else
-            ATT_S3=$(aws s3 ls "$APP_S3_TARGET/attachements/" --recursive | grep -v ' PRE ' | wc -l)
-            log "INFO" "[$APP_NAME] Attachment files copied: $ATT_S3"
         fi
     else
         log "INFO" "[$APP_NAME] No source attachments found in S3 — skipping"
@@ -570,12 +604,10 @@ SSASQL
     APP_META_COUNT=$(find "$APP_META_DIR" -type f 2>/dev/null | wc -l)
     log "INFO" "[$APP_NAME] Source metadata files: $APP_META_COUNT"
     if [[ "$APP_META_COUNT" -gt 0 ]]; then
-        if ! aws s3 cp "$APP_META_DIR" "$APP_S3_TARGET/metadata" --recursive; then
-            warn "[$APP_NAME] Failed to copy metadata to S3"
+        if ! s3_mirror "$APP_META_DIR" "$APP_S3_TARGET/metadata" \
+                "$APP_NAME metadata" "$APP_NAME" "step7c"; then
+            warn "[$APP_NAME] Failed to mirror metadata to S3"
             ((COPY_ERRORS++))
-        else
-            META_S3=$(aws s3 ls "$APP_S3_TARGET/metadata/" --recursive | grep -v ' PRE ' | wc -l)
-            log "INFO" "[$APP_NAME] Metadata files uploaded: $META_S3"
         fi
     else
         log "INFO" "[$APP_NAME] No metadata files found — skipping"

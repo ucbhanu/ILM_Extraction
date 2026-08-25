@@ -26,6 +26,9 @@ STARTDATE=$(date '+%Y-%m-%dT%H:%M:%S')
 
 # COUNTER
 COUNTER=0
+INVOKED_COUNT=0
+FAILED_COUNT=0
+FAILED_FILES=()
 
 # AWS Lambda Function and export location are loaded from .conf.ini
 # (LAMBDA_FUNC and EXPORT_LOC)
@@ -61,7 +64,9 @@ log "INFO" "        				Starting Attachement Export..."
 log "INFO" "        				Application Name: $APP_NAME"
 log "INFO" "**************************************************************************************************************************************"
 # 2. Iterate through the CSV (skipping header)
-tail -n +2 "$TABLE_LIST" | while IFS=',' read -r DIR NAME REST; do
+#    Process substitution (not a pipe) keeps the loop in the current shell so
+#    the counters below survive past the loop.
+while IFS=',' read -r DIR NAME REST || [[ -n "$DIR" ]]; do
     
 	((COUNTER++))
     # Trim potential whitespace or carriage returns
@@ -72,6 +77,13 @@ tail -n +2 "$TABLE_LIST" | while IFS=',' read -r DIR NAME REST; do
     log "INFO" "[$COUNTER] Processing Directory: $DIR, Filename: $NAME"
 	log "INFO" "-----------------------------------------------------------------------------"
 	# 3. Create JSON Payload
+	# Build the destination sub-path for the Lambda.
+	#   - strip the /ilmstage/ prefix when present
+	#   - strip any remaining leading slash, otherwise the key becomes
+	#     "APP//opt/..." (a double slash, which S3 shows as a folder named "/")
+	SUBPATH="${DIR#/ilmstage/}"
+	SUBPATH="${SUBPATH#/}"
+
 	# Use printf to safely inject variables into the JSON template
     PAYLOAD=$(printf '{
       "subpath": "",
@@ -80,7 +92,7 @@ tail -n +2 "$TABLE_LIST" | while IFS=',' read -r DIR NAME REST; do
       "ATTACHMENT_DIRECTORY": "%s",
       "ATTACHMENT_NAME": "%s",
       "status": "QUEUED"
-    }' "$APP_NAME" "$APP_NAME/${DIR#/ilmstage/}" "$DIR" "$NAME")
+    }' "$APP_NAME" "$APP_NAME/$SUBPATH" "$DIR" "$NAME")
 	
 	# 4. Invoke Lambda
     if ! aws lambda invoke \
@@ -89,10 +101,12 @@ tail -n +2 "$TABLE_LIST" | while IFS=',' read -r DIR NAME REST; do
 		--cli-binary-format raw-in-base64-out \
 		"$RESPONSE_FILE"; then
         log "ERROR" "Lambda invocation failed for $APP_NAME with file $NAME"
+        ((FAILED_COUNT++)); FAILED_FILES+=("$DIR/$NAME")
         continue
     fi
 
     log "INFO" "Lambda invoked for $APP_NAME with file $NAME"
+    ((INVOKED_COUNT++))
 
     # 1. Clean the string: remove outer quotes and convert \" to "
 	clean_data=$(sed 's/^"//; s/"$//; s/\\"/"/g' "$RESPONSE_FILE")
@@ -108,7 +122,8 @@ tail -n +2 "$TABLE_LIST" | while IFS=',' read -r DIR NAME REST; do
 	log "INFO" "Export Location: $key"
 	log "INFO" "-----------------------------------------------------------------------------\n"
     sleep 1
-done
+done < <(tail -n +2 "$TABLE_LIST")
+
 log "INFO" "All Attachement has been exported to below S3 path:"
 log "INFO" "Export location: $EXPORT_LOC/$APP_NAME"
 SCRIPT_END_TIME=$(date +%s)
@@ -116,5 +131,18 @@ TOTAL_TIME=$((SCRIPT_END_TIME - SCRIPT_START_TIME))
 
 log "INFO" "**************************************************************************************************************************************"
 log "INFO" "        				Attachement Extraction completed for APP: $APP_NAME"
+log "INFO" "        				Attachments processed : $COUNTER"
+log "INFO" "        				Lambda invoked        : $INVOKED_COUNT"
+log "INFO" "        				Failed                : $FAILED_COUNT"
 log "INFO" "        				Total time taken by script: ${TOTAL_TIME} seconds"
 log "INFO" "**************************************************************************************************************************************"
+
+if (( FAILED_COUNT > 0 )); then
+    log "WARN" "The following attachment(s) failed:"
+    for f in "${FAILED_FILES[@]}"; do
+        log "WARN" "  - $f"
+    done
+    exit 1
+fi
+
+exit 0
